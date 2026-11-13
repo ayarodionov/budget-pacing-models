@@ -226,6 +226,59 @@ Version (a) needs clients to report failures, tokens used and blocked bids.
 Version (b) needs **nothing from clients**. It uses only what the center already
 has: the tokens it granted, and the budget.
 
+### Schema
+
+**What flows where.** Compare §2. There are no arrows from clients back to the
+center: the only feedback is the budget.
+
+```mermaid
+flowchart LR
+    SRC["Bid request source"] --> CL["Client"]
+    CTR["Center"] ==>|"p (broadcast)<br/>+ G_i tokens, valid for step i only"| CL
+    CL -->|"p-coin: yes<br/>and a token left"| BID(("bid<br/>(token used)"))
+    CL -.->|"tokens not used<br/>expire at end of step"| EXP["expired<br/>(nobody reports)"]
+    BID -->|"probability r: 1 unit"| BUD[("Budget B")]
+    BID -->|"probability 1 − r"| FAIL["failed<br/>(nobody reports)"]
+    BUD -.->|"spend visible after d"| CTR
+```
+
+**How the center counts at the start of step i** (d = 30 s, Δ = 5 s, so the
+window holds 6 steps):
+
+```
+ time ─────────────────────────────────────────────────────────────────────────►
+
+ steps     … G(i-9)  G(i-8)  G(i-7) │ G(i-6)  G(i-5)  G(i-4)  G(i-3)  G(i-2)  G(i-1) │  G(i)
+                                    │                                                │
+           ◄── older than d ──────► │ ◄──────────── last d seconds ────────────────► │  now
+           spend already visible:   │ spend not visible yet:                         │  new grant,
+           counted in S_obs at      │ counted at the FULL grant, as if every token   │  at most A(i)
+           ACTUAL cost (used,       │ were used and charged                          │
+           charged tokens only)     │                                                │
+
+ A(i) = B − S_obs − [ G(i-6) + G(i-5) + G(i-4) + G(i-3) + G(i-2) + G(i-1) ]
+```
+
+Each step, the oldest grant leaves the window. Its spend is now in the budget,
+so it is counted at its actual cost instead of its full grant. Tokens that
+expired unused or whose bids failed simply stop counting. This is where budget
+is freed, with no message from clients.
+
+**One control step:**
+
+```mermaid
+sequenceDiagram
+    participant C as Center
+    participant K as Clients
+    participant B as Budget
+    B-->>C: S_obs (spend up to t − d)
+    Note over C: A = B − S_obs − grants of the last d seconds<br/>G = min(⌈s·A⌉, A), recommended s = 0.5
+    C->>K: p and G tokens (valid for this step)
+    Note over K: bid while the p-coin says yes and tokens remain<br/>further bids are blocked
+    K-->>B: charged bids (1 unit each), visible after d
+    Note over K: at end of step: unused tokens expire
+```
+
 ### Rule
 
 At the start of each control step i the center grants G_i tokens, **valid only
