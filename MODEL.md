@@ -3,7 +3,91 @@
 Initial problem statement and clarifications: `INITIALMODEL.MD`.
 Code: `src/pacing/` · tests: `tests/` · numbers and charts: `results/`.
 
-## 1. Model
+## 1. System configuration
+
+### Actors
+
+The system has three kinds of participants.
+
+1. **Bid request source.** One common stream of bid requests (auction
+   opportunities). Requests come one at a time at random moments, about λ per
+   second on average. In this version the rate is steady: a Poisson process with
+   constant λ. Nobody controls the source, and the center does not know λ.
+
+2. **Clients** (bidders). There are N of them. The center does not know N, and it
+   does not need to. Every client listens to the same source, and each request is
+   delivered to **exactly one** client, chosen at random with equal probability
+   1/N. A client that receives a request responds with a **token** with
+   probability p, or ignores the request with probability 1 − p. A token is the
+   client's decision to bid. It is not yet money: bidding and actually being
+   charged are separate events. Clients have no token limit. Every client uses
+   the same p, which it gets from the center and uses until the center sends a
+   new one.
+
+3. **Center.** The center owns the **budget B** and has to spend it within the
+   **horizon T** (for example, one campaign hour). It never sees bid requests or
+   tokens directly. Its only view is the budget, which shows the spend with a
+   delay d. Its only control is p, which it broadcasts to all clients at once.
+   Clients apply a new p immediately, so the center can stop all spending at once
+   by sending p = 0.
+
+### What happens to a single bid request
+
+1. The source emits a request at time s.
+2. The request reaches one client, chosen at random.
+3. The client creates a token with probability p (it bids), or drops the request.
+4. The token turns into real spend with probability r. Otherwise it costs
+   nothing, for example because the bid lost or was never charged. Realised spend
+   is always exactly **1 budget unit**. The center does not know r, but r is stable.
+5. The 1 unit is taken from the budget at time s, but the center sees it only at
+   time s + d. The delay d is fixed and known.
+
+```mermaid
+flowchart LR
+    SRC["Bid request source<br/>Poisson, rate λ"] -->|"each request goes to<br/>one random client (1/N)"| C1["Client 1"]
+    SRC --> C2["Client 2"]
+    SRC --> CN["Client N"]
+    C1 & C2 & CN -->|"token with<br/>probability p"| TOK(("tokens"))
+    TOK -->|"realised with probability r<br/>1 unit each"| BUD[("Budget B")]
+    BUD -.->|"visible after delay d"| CTR["Center"]
+    CTR ==>|"broadcast p<br/>(takes effect immediately)"| C1 & C2 & CN
+```
+
+### The control loop
+
+The center acts every Δ seconds, the control period:
+
+1. Read the visible budget. It shows all spend up to time t − d.
+2. Update the estimate of how much one unit of p spends per second (k = λ·r, §2).
+3. Choose a new p. Pacing says how fast to spend. The risk check says how much
+   spend can be in flight without risking overspend (§3).
+4. Broadcast p to all clients.
+
+The center therefore steers using a view of the budget that is d seconds old.
+Spend that happened during the last d seconds is **in flight**: it has already
+been charged but the center cannot see it yet. That is the whole difficulty. If
+d = 0, the center could spend until exactly B and stop. With d > 0, it must stop
+early enough that the in-flight spend still fits in the budget.
+
+### Goals and constraints
+
+- **Overspend is critical.** The probability that total spend exceeds B must stay
+  at or below a small, chosen ε.
+- **Underspend should be avoided, but it is not critical.** Spend as close to B as
+  ε allows.
+- **Do not spend too fast.** Spend should be spread over the whole horizon,
+  ideally at a steady rate of about B/T. It should not all go at the start.
+
+### Example with the default numbers
+
+λ = 1000 requests/s and r = 0.1, so k = λ·r = 100 units/s at p = 1. To spend
+B = 5000 units in T = 1 h, the target rate is about 1.39 units/s, which needs
+p ≈ 0.014. At that rate about 14 of the 1000 requests per second become tokens,
+and about 1.4 of those become spend. With d = 30 s, about 42 units are in flight
+at any moment. Near the end of the hour, those 42 units are what can push the
+total over B.
+
+## 2. Formal model
 
 | Symbol | Meaning | Known to center? |
 |---|---|---|
@@ -45,7 +129,7 @@ immediate stop, the center can always freeze the committed spend at its current
 value. All of the risk comes from spend that is in flight and has not been
 observed yet.
 
-## 2. Strategy (`BayesRiskController`)
+## 3. Strategy (`BayesRiskController`)
 
 At every control step:
 
@@ -87,7 +171,7 @@ is verified empirically, not proved.
 risk adds up over the end-game steps. In the comparison below, that rule
 overspends 2.6× more often than ε.
 
-## 3. Results (default: B = 5000, T = 1 h, k = 100/s, d = 30 s, Δ = 5 s, ε = 10⁻³)
+## 4. Results (default: B = 5000, T = 1 h, k = 100/s, d = 30 s, Δ = 5 s, ε = 10⁻³)
 
 Full tables: `results/summary.md`. Charts: `results/*.png`.
 
@@ -118,7 +202,7 @@ What the results show:
    (8.8 % deviation) but does not raise the overspend risk.
 6. η (how fast the risk budget is used) hardly matters between 0.25 and 0.5.
 
-## 4. Limits and next steps
+## 5. Limits and next steps
 
 - **Optimality.** The controller is greedy for each step. It is not the solution
   of the full dynamic programme. It does match the known-k oracle, and the
@@ -130,7 +214,7 @@ What the results show:
   its upper quantile or model its distribution), and a delay before clients
   receive a new p (add it to the in-flight window).
 
-## 5. Running
+## 6. Running
 
 ```bash
 uv run pytest                          # 38 tests, ~5 s
