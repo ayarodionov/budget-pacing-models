@@ -65,7 +65,7 @@ Proposed controller, 400000 runs per row.
 | guess = 2 x true | 1.18e-03 | 1.5e-03 | 2.8 | 0.402 | 0.620 | 1.36 |
 | guess = 10 x true | 7.25e-04 | 9.9e-04 | 2.3 | 0.402 | 0.620 | 1.73 |
 
-## 7. Risk-spending rate eta (share of the unused risk budget one step may use)
+## 7. Risk-spending rate eta (share of the unused risk budget that may be used per 5 s)
 
 | strategy | P(overspend) | 95% upper bound | mean overspend, units (if over) | mean underspend % | p95 underspend % | max pacing deviation % |
 |---|---|---|---|---|---|---|
@@ -75,4 +75,31 @@ Proposed controller, 400000 runs per row.
 | eta = 0.9 | 9.75e-04 | 1.3e-03 | 2.2 | 0.432 | 0.660 | 1.23 |
 | eta = 1 | 1.08e-03 | 1.4e-03 | 2.5 | 0.443 | 0.680 | 1.23 |
 
-_Total compute: 333 s._
+## 8. Control period Δ (p recomputed and sent every Δ seconds)
+
+| setting | P(overspend) | 95% upper bound | mean underspend % | p95 underspend % | max pacing deviation % | p broadcasts per hour |
+|---|---|---|---|---|---|---|
+| Δ = 1 s | 7.50e-04 | 1.0e-03 | 0.382 | 0.580 | 1.25 | 3600 |
+| Δ = 2 s | 1.20e-03 | 1.5e-03 | 0.388 | 0.580 | 1.24 | 1800 |
+| Δ = 5 s | 8.25e-04 | 1.1e-03 | 0.402 | 0.600 | 1.23 | 720 |
+| Δ = 10 s | 9.75e-04 | 1.3e-03 | 0.424 | 0.640 | 1.22 | 360 |
+| Δ = 30 s | 7.50e-04 | 1.0e-03 | 0.493 | 0.760 | 1.18 | 120 |
+
+## 9. Send p only when it changes by more than a threshold
+
+The center still recomputes p every Δ, but sends it only when the relative change exceeds the threshold (and keeps the old p only if that is still safe).
+
+| setting | P(overspend) | 95% upper bound | mean underspend % | p95 underspend % | max pacing deviation % | p broadcasts per hour |
+|---|---|---|---|---|---|---|
+| Δ = 1 s, threshold every period | 1.30e-03 | 1.6e-03 | 0.383 | 0.580 | 1.25 | 3600 |
+| Δ = 1 s, threshold 2% | 9.75e-04 | 1.3e-03 | 0.382 | 0.580 | 1.31 | 118 |
+| Δ = 1 s, threshold 5% | 7.75e-04 | 1.0e-03 | 0.382 | 0.580 | 1.54 | 53 |
+| Δ = 1 s, threshold 10% | 1.18e-03 | 1.5e-03 | 0.382 | 0.580 | 2.16 | 35 |
+| Δ = 1 s, threshold 25% | 9.75e-04 | 1.3e-03 | 0.374 | 0.600 | 4.66 | 25 |
+| Δ = 5 s, threshold every period | 6.00e-04 | 8.4e-04 | 0.402 | 0.620 | 1.23 | 720 |
+| Δ = 5 s, threshold 2% | 1.12e-03 | 1.4e-03 | 0.402 | 0.600 | 1.29 | 53 |
+| Δ = 5 s, threshold 5% | 1.10e-03 | 1.4e-03 | 0.402 | 0.600 | 1.53 | 23 |
+| Δ = 5 s, threshold 10% | 1.15e-03 | 1.5e-03 | 0.400 | 0.620 | 2.15 | 14 |
+| Δ = 5 s, threshold 25% | 1.15e-03 | 1.5e-03 | 0.396 | 0.620 | 3.49 | 8 |
+
+_Total compute: 541 s._

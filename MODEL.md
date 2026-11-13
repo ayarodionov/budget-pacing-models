@@ -55,13 +55,20 @@ flowchart LR
 
 ### The control loop
 
-The center acts every Δ seconds, the control period:
+The center acts every Δ seconds. This is the **control period**, the `step`
+parameter, 5 s by default:
 
 1. Read the visible budget. It shows all spend up to time t − d.
 2. Update the estimate of how much one unit of p spends per second (k = λ·r, §2).
 3. Choose a new p. Pacing says how fast to spend. The risk check says how much
    spend can be in flight without risking overspend (§3).
-4. Broadcast p to all clients.
+4. Broadcast p to all clients. By default the center sends p every period. With
+   a **broadcast threshold** it sends p only when p changes by more than that
+   fraction, and clients keep the last p they received. A stop (p = 0) is always
+   sent.
+
+Between updates p is constant. The budget is read only at the start of each
+period, so the delay d is effectively rounded up to a whole number of periods.
 
 The center therefore steers using a view of the budget that is d seconds old.
 Spend that happened during the last d seconds is **in flight**: it has already
@@ -129,6 +136,63 @@ immediate stop, the center can always freeze the committed spend at its current
 value. All of the risk comes from spend that is in flight and has not been
 observed yet.
 
+### Are tokens needed?
+
+**Not in this model.** Clients hold no stock of tokens, so "the client creates a
+token" just means "the client accepts the request with probability p". The center
+never sees tokens, only the budget, so the whole system reduces to
+spend rate = k·p (see *Reduction*). The controller and the simulator use only p.
+A "token" is the Bernoulli(p) draw, and the word could be replaced by "bid".
+Tokens are still useful as a name for one idea: *bidding* (probability p, which the
+center controls) is separate from *being charged* (probability r, which nobody controls).
+
+**Where tokens would matter: limited allowances.** Tokens matter once they are
+something a client must *have* in order to bid. That is a separate control
+channel from p, and it can provide a guarantee that p alone cannot.
+
+#### Example: the token-lease model
+
+- **Wallets.** Each client has a token wallet. To bid, it needs one token *and* a
+  "yes" from its p-coin. The bid uses up the token.
+- **Leases.** Clients ask the center for a lease of L tokens when their wallet
+  runs low. As a side effect, the center now learns who the clients are, so N
+  becomes observable. Unused tokens are returned when the lease expires.
+- **Outcomes.** A used token either turns into spend (1 unit, visible after d) or
+  fails (the bid lost or was not charged). The client reports the failure back
+  after a delay d_f.
+- **Center's rule:** visible spend + tokens outstanding ≤ B, where "outstanding"
+  means leased tokens whose outcome is not yet known. No token can cost more than
+  1 unit, so **overspend is impossible**. This is a guarantee with certainty, not
+  "probability ≤ ε". It holds even if a stop message is lost, a client stops
+  responding, or the delay is longer than expected, which are exactly the failures
+  that the probabilistic controller has to assume away.
+- **p is still needed.** A wallet limits *how much* a client may spend, not *how
+  fast*. The center still uses p for even spending (point 5).
+
+**Cost of the certain guarantee.** The reserve has to cover every outstanding
+*token*, not the expected *spend*. With the default numbers (λ·p ≈ 14 bids/s,
+r = 0.1, d_f = 30 s), about 420 tokens are outstanding at any moment. They will
+turn into only about 42 units of spend, and the probabilistic controller reserves
+about 20 units. Near the end the lease rule throttles spending once the remaining
+budget falls below about λ·p·d_f. The remaining budget then shrinks only with time
+constant ≈ d_f / r (≈ 5 min), so a lot of budget is left unspent unless:
+
+- r is close to 1 (most bids are charged), or
+- failures are reported quickly (d_f ≪ d; for example, an auction loss is known
+  within milliseconds), or
+- leases are a **backstop**: the probabilistic controller paces as now, and token
+  leases cap the damage from rare failures such as a lost stop message or a client
+  that keeps bidding.
+
+**Other models where tokens would help:**
+- **Different bid prices.** A bid costs c units instead of 1. Tokens become the
+  unit of money, and a bid uses c tokens.
+- **Several campaigns or client groups with their own budgets.** A broadcast p
+  is the same for everyone, while token allocations can differ per client.
+- **Unreliable messages to clients.** If p cannot be changed immediately (your
+  answer C does not hold), only a pre-set allowance limits what a client can spend
+  after losing contact with the center.
+
 ## 3. Strategy (`BayesRiskController`)
 
 At every control step:
@@ -147,7 +211,17 @@ At every control step:
    - q₁(p) = the same probability with the next step's spend pΔ added.
 
    Then use the largest p ≤ p_pace whose added risk satisfies
-   q₁(p) − q₀ ≤ η·(ε − risk_used), and add q₁ − q₀ to risk_used.
+   q₁(p) − q₀ ≤ η_Δ·(ε − risk_used), and add q₁ − q₀ to risk_used.
+
+   η is the share of the unused risk budget that may be used **per 5 seconds**,
+   so one step may use η_Δ = 1 − (1 − η)^(Δ/5 s). An earlier version applied η
+   per *step*. With a short Δ, that version used up its risk budget faster in
+   real time and stopped too early, so Δ = 1 s did worse than Δ = 5 s.
+4. **Send or keep** (only if a broadcast threshold is set). If the new p is within
+   the threshold of the p that clients already use, *and* that old p also passes
+   the risk check in step 3, keep the old p and send nothing. Otherwise send the
+   new p. The risk is always charged for the p that clients actually use, so the
+   guarantee below does not change.
 
 ### Why this bounds total overspend by ε
 
@@ -201,6 +275,21 @@ What the results show:
    center has no data yet. A 10× too-low guess makes spending uneven at the start
    (8.8 % deviation) but does not raise the overspend risk.
 6. η (how fast the risk budget is used) hardly matters between 0.25 and 0.5.
+7. **How often p is updated matters little while Δ is well below d.** With d = 30 s:
+
+   | Δ | 1 s | 2 s | 5 s | 10 s | 30 s |
+   |---|---|---|---|---|---|
+   | mean underspend | 0.38 % | 0.39 % | 0.40 % | 0.42 % | 0.49 % |
+
+   This follows the in-flight window d + Δ under the square root (item 2).
+   Updating faster than about d/6 gains almost nothing.
+8. **p does not need to be sent every period.** p stays almost flat for most of
+   the campaign, so sending it only when it changes by more than 2–10 % cuts the
+   messages to clients from 720 per hour (Δ = 5 s) to 14–53 per hour. Underspend
+   and overspend stay the same. The cost is somewhat less even spending: the
+   deviation from even pace goes from 1.2 % to 1.3–2.2 %. Recomputing every second
+   but sending only on a > 5 % change gives the lowest underspend with about
+   50 messages per hour (`results/messages.png`).
 
 ## 5. Limits and next steps
 
@@ -213,10 +302,14 @@ What the results show:
   pace along it), k that drifts (discount old observations), a random delay (use
   its upper quantile or model its distribution), and a delay before clients
   receive a new p (add it to the in-flight window).
+- **Token leases as a hard cap** (§2, *Are tokens needed?*): simulate how much
+  underspend the certain guarantee costs, as a function of r and the
+  failure-report delay d_f, alone and as a backstop under the probabilistic
+  controller.
 
 ## 6. Running
 
 ```bash
-uv run pytest                          # 38 tests, ~5 s
-uv run python -m pacing.experiments    # full Monte Carlo, ~6 min (--quick: ~25 s)
+uv run pytest                          # 44 tests, ~6 s
+uv run python -m pacing.experiments    # full Monte Carlo, ~10 min (--quick: ~45 s)
 ```

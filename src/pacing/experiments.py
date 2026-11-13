@@ -50,6 +50,17 @@ HEADER = ("| strategy | P(overspend) | 95% upper bound | mean overspend, units (
           "|---|---|---|---|---|---|---|")
 
 
+HEADER_MSG = ("| setting | P(overspend) | 95% upper bound | mean underspend % | p95 underspend % | "
+              "max pacing deviation % | p broadcasts per hour |\n|---|---|---|---|---|---|---|")
+
+
+def fmt_row_msg(name: str, s: dict, broadcasts: float) -> str:
+    over = f"{s['overspend_prob']:.2e}" if s["overspend_prob"] else "0"
+    return (f"| {name} | {over} | {s['overspend_prob_upper95']:.1e} | "
+            f"{s['mean_underspend_pct']:.3f} | {s['p95_underspend_pct']:.3f} | "
+            f"{s['mean_max_pace_dev_pct']:.2f} | {broadcasts:.0f} |")
+
+
 def theory_shortfall(scn: Scenario, eps: float) -> float:
     """Rough steady-pacing shortfall: z_{1-eps} * sd of the spend in flight at the end."""
     rate = scn.budget / scn.horizon
@@ -143,10 +154,34 @@ def main() -> None:
     md.append("")
 
     # ---- E7: eta
-    md += ["## 7. Risk-spending rate eta (share of the unused risk budget one step may use)", "", HEADER]
+    md += ["## 7. Risk-spending rate eta (share of the unused risk budget that may be used per 5 s)", "", HEADER]
     for eta in (0.1, 0.25, 0.5, 0.9, 1.0):
         s = simulate(scn, bayes(scn, eps, eta=eta), n, seed=7).summary(scn.budget)
         md.append(fmt_row(f"eta = {eta:g}", s))
+    md.append("")
+
+    # ---- E8 / E9: how often p is updated and sent
+    md += ["## 8. Control period Δ (p recomputed and sent every Δ seconds)", "", HEADER_MSG]
+    msg_points: dict[float, list[tuple[float, float, str]]] = {}
+    for step in (1.0, 2.0, 5.0, 10.0, 30.0):
+        sc = replace(scn, step=step)
+        c = bayes(sc, eps)
+        s = simulate(sc, c, n, seed=8).summary(sc.budget)
+        md.append(fmt_row_msg(f"Δ = {step:g} s", s, c.broadcasts.mean()))
+    md.append("")
+    md += ["## 9. Send p only when it changes by more than a threshold", "",
+           "The center still recomputes p every Δ, but sends it only when the relative change "
+           "exceeds the threshold (and keeps the old p only if that is still safe).", "",
+           HEADER_MSG]
+    for step in (1.0, 5.0):
+        sc = replace(scn, step=step)
+        msg_points[step] = []
+        for thr in (None, 0.02, 0.05, 0.1, 0.25):
+            c = bayes(sc, eps, broadcast_threshold=thr)
+            s = simulate(sc, c, n, seed=9).summary(sc.budget)
+            label = "every period" if thr is None else f"{thr:.0%}"
+            md.append(fmt_row_msg(f"Δ = {step:g} s, threshold {label}", s, c.broadcasts.mean()))
+            msg_points[step].append((c.broadcasts.mean(), s["mean_underspend_pct"], label))
     md.append("")
     md.append(f"_Total compute: {time.time() - t_start:.0f} s._")
     (OUT / "summary.md").write_text("\n".join(md) + "\n")
@@ -156,7 +191,24 @@ def main() -> None:
     _fig_delay(delays, under_d, theory_d, scn)
     _fig_eps(epss, under_e)
     _fig_endgame(egs, eg_under, eg_dev)
+    _fig_messages(msg_points)
     print((OUT / "summary.md").read_text())
+
+
+def _fig_messages(points):
+    fig, ax = plt.subplots(figsize=(6.5, 3.9))
+    for (step, pts), color in zip(points.items(), (BLUE, ORANGE)):
+        xs, ys, labels = zip(*pts)
+        ax.plot(xs, ys, "-o", color=color, ms=6, label=f"recompute every {step:g} s")
+        for x, y, lab in zip(xs, ys, labels):
+            ax.annotate(lab, (x, y), textcoords="offset points", xytext=(5, 5), fontsize=8, color=INK2)
+    ax.set_xscale("log")
+    ax.set(title="Sending p only on a >2% change cuts messages 15-30x at no cost", xlabel="p broadcasts per hour (log scale)",
+           ylabel="mean underspend, % of budget")
+    ax.legend(fontsize=8, loc="center right")
+    fig.tight_layout()
+    fig.savefig(OUT / "messages.png", dpi=140)
+    plt.close(fig)
 
 
 def _fig_trajectories(scn, res_plain, res_eg):

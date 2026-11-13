@@ -152,22 +152,41 @@ class BayesRiskController(_Pacer):
 
     The bracket is computable exactly (gamma-Poisson tails), so the controller
     charges it to a risk budget and never lets the cumulative charge exceed eps.
-    Each step may use at most ``eta`` times the risk budget that is still unused.
+    At most a share ``eta`` of the still-unused risk budget may be used per
+    ``eta_period`` seconds, i.e. a share 1 - (1 - eta)^(step / eta_period) per control
+    step. Defining it per unit of time (not per step) keeps the behaviour the same
+    when the control period changes; per step, a faster controller would burn its
+    risk budget sooner and stop earlier.
 
     If ``known_rate`` is given the controller knows k exactly (an oracle used as a
     lower bound on achievable underspend).
+
+    ``broadcast_threshold`` (relative change of p) makes the center send a new p
+    only when it differs from the p clients already use by more than that fraction.
+    The old p is kept only if it also passes the risk check, and the risk charge is
+    always computed for the p clients actually use, so the eps guarantee is
+    unchanged. None = send p every control period. ``broadcasts`` counts the
+    messages per run.
     """
 
     def __init__(self, view, prior_mean, eps: float, eta: float = 0.5,
-                 known_rate: float | None = None, **kw):
+                 eta_period: float = 5.0,
+                 known_rate: float | None = None,
+                 broadcast_threshold: float | None = None, **kw):
         super().__init__(view, prior_mean, **kw)
         self.eps = float(eps)
         self.eta = float(eta)
+        self.eta_step = 1.0 - (1.0 - float(eta)) ** (view.step / float(eta_period))
         self.known_rate = known_rate
+        self.broadcast_threshold = broadcast_threshold
         self.risk_used = np.zeros(0)
+        self.p_last = np.zeros(0)
+        self.broadcasts = np.zeros(0, dtype=np.int64)
 
     def reset(self, n_runs):
         self.risk_used = np.zeros(n_runs)
+        self.p_last = np.zeros(n_runs)  # clients start with p = 0 (nothing sent yet)
+        self.broadcasts = np.zeros(n_runs, dtype=np.int64)
 
     def _tail(self, remaining, alpha, beta, exposure):
         if self.known_rate is not None:
@@ -184,7 +203,7 @@ class BayesRiskController(_Pacer):
 
         p = self._pace(t, remaining - k_est * w, k_est)
         q0 = self._tail(remaining, alpha, beta, w)  # risk already locked in
-        allow = self.eta * np.clip(self.eps - self.risk_used, 0.0, None)
+        allow = self.eta_step * np.clip(self.eps - self.risk_used, 0.0, None)
         q1 = self._tail(remaining, alpha, beta, w + p * dt)
 
         bad = (q1 - q0) > allow
@@ -200,5 +219,18 @@ class BayesRiskController(_Pacer):
             q1 = q1.copy()
             q1[bad] = self._tail(rb, ab, bb, wb + p[bad] * dt)
 
+        if self.broadcast_threshold is None:
+            send = np.ones(p.shape, dtype=bool)
+        else:
+            last = self.p_last
+            close = np.abs(p - last) <= self.broadcast_threshold * last
+            q_last = self._tail(remaining, alpha, beta, w + last * dt)
+            hold = close & ((q_last - q0) <= allow)  # keeping the old p must be safe too
+            p = np.where(hold, last, p)
+            q1 = np.where(hold, q_last, q1)
+            send = ~hold & (p != last)
+
+        self.broadcasts += send
+        self.p_last = p
         self.risk_used += np.clip(q1 - q0, 0.0, None)
         return p

@@ -162,3 +162,48 @@ def test_impossible_budget_means_full_throttle_and_no_overspend():
     res = simulate(scn, c, 200, keep=1)
     assert (res.traj_p[0, scn.delay_steps + 1:] == 1.0).all()
     assert not res.overspent.any()
+
+
+# --------------------------------------------------------------------------- update period & broadcasts
+def test_delay_rounds_up_to_whole_control_periods():
+    assert Scenario(delay=30.0, step=7.0).delay_steps == 5
+    assert Scenario(delay=30.0, step=5.0).delay_steps == 6
+    assert Scenario(delay=0.0, step=5.0).delay_steps == 0
+
+
+def test_without_threshold_p_is_sent_every_period():
+    c = BayesRiskController(SMALL.center_view(), prior_mean=_k(), eps=0.01)
+    simulate(SMALL, c, 50)
+    assert (c.broadcasts == SMALL.n_steps).all()
+
+
+@pytest.mark.parametrize("threshold", [0.05, 0.25])
+def test_threshold_cuts_messages_and_keeps_guarantee(threshold):
+    eps, n = 0.02, 15_000
+    c = BayesRiskController(SMALL.center_view(), prior_mean=_k(), eps=eps,
+                            broadcast_threshold=threshold)
+    res = simulate(SMALL, c, n, seed=31)
+    assert (c.risk_used <= eps * (1 + 1e-9)).all()
+    assert res.overspent.mean() <= eps + 3 * np.sqrt(eps / n)
+    assert c.broadcasts.mean() < 0.5 * SMALL.n_steps
+    assert np.mean(res.final_spend) > 0.9 * SMALL.budget
+
+
+def test_held_p_is_reused_and_stop_is_always_sent():
+    c = BayesRiskController(SMALL.center_view(), prior_mean=_k(), eps=0.01,
+                            broadcast_threshold=0.5)
+    res = simulate(SMALL, c, 200, seed=4, keep=200)
+    p = res.traj_p
+    changes = (np.diff(p, axis=1) != 0).sum(axis=1) + (p[:, 0] != 0)
+    assert (changes == c.broadcasts).all()  # p only changes when a message is sent
+    # whenever the controller stops (p goes to 0) it is a real change, so it is sent
+    stops = ((p[:, :-1] > 0) & (p[:, 1:] == 0)).sum(axis=1)
+    assert (stops <= c.broadcasts).all() and stops.sum() > 0
+
+
+def test_eta_is_a_rate_per_time_not_per_step():
+    for step in (1.0, 5.0, 25.0):
+        sc = Scenario(step=step)
+        c = BayesRiskController(sc.center_view(), prior_mean=1.0, eps=0.01, eta=0.5, eta_period=5.0)
+        # share of unused risk still unused after 5 s is 1 - eta, whatever the step
+        assert (1 - c.eta_step) ** (5.0 / step) == pytest.approx(0.5)
