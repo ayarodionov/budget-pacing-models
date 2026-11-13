@@ -18,21 +18,29 @@ from __future__ import annotations
 import numpy as np
 from scipy.special import betainc, gammainc
 
+from . import specfun
 from .model import CenterView
+
+# "scipy": scipy.special. "portable": pacing.specfun (Lanczos lgamma + continued
+# fractions, elementary math only) - the same algorithms an Elixir port uses.
+TAIL_IMPLS = ("scipy", "portable")
 
 
 # --------------------------------------------------------------------------- tails
-def poisson_tail(m: np.ndarray, mu: np.ndarray) -> np.ndarray:
+def poisson_tail(m: np.ndarray, mu: np.ndarray, impl: str = "scipy") -> np.ndarray:
     """P(X > m) for X ~ Poisson(mu), elementwise; m may be non-integer or negative."""
     m, mu = np.broadcast_arrays(np.floor(np.asarray(m, float)), np.asarray(mu, float))
     out = np.where(m < 0, 1.0, 0.0)
     ok = (m >= 0) & (mu > 0)
-    out[ok] = gammainc(m[ok] + 1.0, mu[ok])
+    if ok.any():
+        f = gammainc if impl == "scipy" else specfun.gammainc_lower_v
+        out[ok] = f(m[ok] + 1.0, mu[ok])
     return out
 
 
 def gamma_poisson_tail(
-    m: np.ndarray, alpha: np.ndarray, beta: np.ndarray, exposure: np.ndarray
+    m: np.ndarray, alpha: np.ndarray, beta: np.ndarray, exposure: np.ndarray,
+    impl: str = "scipy",
 ) -> np.ndarray:
     """P(X > m) where X | k ~ Poisson(k * exposure) and k ~ Gamma(alpha, rate=beta).
 
@@ -47,7 +55,9 @@ def gamma_poisson_tail(
     )
     out = np.where(m < 0, 1.0, 0.0)
     ok = (m >= 0) & (v > 0)
-    out[ok] = betainc(m[ok] + 1.0, alpha[ok], v[ok] / (beta[ok] + v[ok]))
+    if ok.any():
+        f = betainc if impl == "scipy" else specfun.betainc_v
+        out[ok] = f(m[ok] + 1.0, alpha[ok], v[ok] / (beta[ok] + v[ok]))
     return out
 
 
@@ -172,13 +182,17 @@ class BayesRiskController(_Pacer):
     def __init__(self, view, prior_mean, eps: float, eta: float = 0.5,
                  eta_period: float = 5.0,
                  known_rate: float | None = None,
-                 broadcast_threshold: float | None = None, **kw):
+                 broadcast_threshold: float | None = None,
+                 tails: str = "scipy", **kw):
         super().__init__(view, prior_mean, **kw)
         self.eps = float(eps)
         self.eta = float(eta)
         self.eta_step = 1.0 - (1.0 - float(eta)) ** (view.step / float(eta_period))
         self.known_rate = known_rate
         self.broadcast_threshold = broadcast_threshold
+        if tails not in TAIL_IMPLS:
+            raise ValueError(f"tails must be one of {TAIL_IMPLS}")
+        self.tails = tails
         self.risk_used = np.zeros(0)
         self.p_last = np.zeros(0)
         self.broadcasts = np.zeros(0, dtype=np.int64)
@@ -190,8 +204,8 @@ class BayesRiskController(_Pacer):
 
     def _tail(self, remaining, alpha, beta, exposure):
         if self.known_rate is not None:
-            return poisson_tail(remaining, self.known_rate * exposure)
-        return gamma_poisson_tail(remaining, alpha, beta, exposure)
+            return poisson_tail(remaining, self.known_rate * exposure, self.tails)
+        return gamma_poisson_tail(remaining, alpha, beta, exposure, self.tails)
 
     def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
         alpha, beta, k_est = self._posterior(observed_spend, observed_exposure)

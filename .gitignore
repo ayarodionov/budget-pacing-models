@@ -12,3 +12,6 @@ wheels/
 # Tools
 .pytest_cache/
 .DS_Store
+
+# Elixir NIF build output
+elixir/priv/

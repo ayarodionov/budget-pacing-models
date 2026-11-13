@@ -106,6 +106,7 @@ total over B.
 | λ | rate of bid requests (steady Poisson) | **no** |
 | r | probability that a token turns into budget spend (stable) | **no** |
 | N | number of clients | **no** |
+| k | k = λ·r, budget spend per second at p = 1; actual spend rate is k·p (the only unknown the center needs, §3 *How k is estimated*) | **no**, but estimated from the budget |
 | p | token probability broadcast to all clients; takes effect immediately | it sets it |
 
 A request goes to a uniformly random client. That client creates a token with
@@ -135,6 +136,41 @@ is not visible yet.
 immediate stop, the center can always freeze the committed spend at its current
 value. All of the risk comes from spend that is in flight and has not been
 observed yet.
+
+### Why a Poisson process?
+
+The problem statement fixes only the *average* rate of requests ("steady
+traffic"). How requests vary around that average is a modelling choice. Poisson
+is the natural default, for three reasons.
+
+1. **It fits the source.** Bid requests come from many users and pages acting
+   independently, each one rarely. Merging many such independent streams gives
+   approximately a Poisson process (Palm–Khintchine theorem). Among streams with a
+   given rate, Poisson also assumes nothing more: no bursts, no regularity, no
+   memory.
+2. **The spend stream is close to Poisson even if requests are not.** Only
+   p·r ≈ 0.0014 of requests become spend. Sparse random thinning of a stationary
+   stream makes it close to Poisson (Rényi's theorem), so short-term burstiness
+   in the requests mostly disappears before it reaches the budget.
+3. **It makes the model solvable exactly.** Random routing, p and r each thin the
+   stream, and thinning keeps it Poisson. So N drops out and only k = λ·r matters
+   (see *Reduction*). Counts in separate intervals are independent, so the
+   estimate of k is a closed-form Gamma posterior. The in-flight spend is then
+   negative-binomial, so the risk check computes exact probabilities. The ε
+   guarantee (§3) depends on this.
+
+**Weak point.** Poisson assumes the variance of counts equals the mean. Real
+traffic often varies more. Changes in rate that last tens of seconds or longer
+(drift, campaigns starting and stopping, bursts) survive the thinning and give
+counts with variance F × mean, where F > 1. The controller would then
+underestimate the uncertainty in the in-flight spend: the reserve should be
+about √F times larger, and the real overspend probability would be above ε.
+
+Possible remedies, not implemented:
+- A negative-binomial count model with F estimated from the spend observed in
+  each period.
+- A time-varying rate λ(t) for daily cycles.
+- A Hawkes process if bursts trigger further bursts.
 
 ### Are tokens needed?
 
@@ -199,7 +235,7 @@ At every control step:
 
 1. **Estimate k.** Use the posterior k ~ Gamma(α, β). Before any spend is visible,
    α and β come from the center's rough guess (`prior_mean`). After that,
-   α = 1 + S_obs and β = E (flat prior).
+   α = 1 + S_obs and β = E (flat prior). Details are in *How k is estimated* below.
 2. **Pace.** Spend the expected remaining budget evenly over the remaining planning time:
 
        p_pace = (B − S_obs − k̂·W) / (k̂ · (T − endgame − t)),    clipped to [0, 1]
@@ -222,6 +258,76 @@ At every control step:
    the risk check in step 3, keep the old p and send nothing. Otherwise send the
    new p. The risk is always charged for the p that clients actually use, so the
    guarantee below does not change.
+
+### How k is estimated
+
+k is the spend per second the system would produce at p = 1. The center never
+measures it directly. It has only two numbers, and both are enough
+(code: `_Pacer._posterior` in `controllers.py`):
+
+- **S_obs**, the spend visible in the budget, which covers everything up to t − d;
+- **E = ∫ p ds over the same period, up to t − d**. The center knows E exactly,
+  because it set p itself. E is the number of "seconds at full throttle" that
+  produced S_obs.
+
+**Basic idea: k̂ ≈ S_obs / E.** For example, the center sent p = 0.014 for the
+first 10 minutes, and spend up to t − d = 570 s is visible. Then
+E = 0.014 × 570 ≈ 8.0 s at full throttle. If S_obs = 798 units, then
+k̂ ≈ 798 / 8.0 ≈ 100 units/s.
+
+**Why divide by E and not by elapsed time.** p changes over time, so each second
+counts with the weight p it had. In period j the spend is Poisson(k·p_j·Δ)
+(see *Reduction*). Multiplying these probabilities over all periods gives a
+likelihood
+
+    L(k) ∝ k^S_obs · e^(−k·E),
+
+so S_obs and E together contain everything the data say about k. The order in
+which spend arrived, and how p changed along the way, add nothing.
+
+**Why only the period up to t − d.** Spend from the last d seconds is not visible
+yet. If its exposure were added to E without its spend, k̂ would be biased low,
+and low is the dangerous direction for overspend. That exposure, W, is used
+separately: as the in-flight window in the risk check.
+
+**Uncertainty: a whole distribution, not one number.** With the likelihood above,
+the posterior of k is a Gamma distribution:
+
+    k ~ Gamma(α = 1 + S_obs, β = E)       mean α/β,   relative sd ≈ 1/√S_obs
+
+It sharpens as the center sees more spend:
+
+| spend observed | relative sd of k |
+|---|---|
+| 100 units | ±10 % |
+| 1000 units | ±3 % |
+| 5000 units (the whole budget) | ±1.4 % |
+
+**The start: before any spend is visible.** During the first d seconds there is no
+data. The center uses its rough guess k_guess (`prior_mean`), entered as a Gamma
+prior with shape a₀ (`prior_shape`, 2 by default). In effect the guess counts as
+a₀ units of pseudo-spend. This is the only time the guess matters. A wrong guess
+makes spending uneven during these first d seconds, and nothing worse (§4, item 5).
+
+**After the first spend is visible, the guess is dropped (`flat_after_data`).**
+The usual Bayesian update would keep the guess forever as α = a₀ + S_obs,
+β = a₀/k_guess + E. If the guess is too low, that pulls k̂ down for the whole
+campaign. The tests caught exactly this: overspend 2.6 % against ε = 2 % with a
+5× too-low guess. The flat-prior posterior Gamma(1 + S_obs, E) depends on the
+data only. Its upper tail equals the exact (Garwood) upper confidence bound for a
+Poisson rate, so it does not understate how large k could be.
+
+**Two ways the estimate is used:**
+- **Pacing** uses the mean k̂ = α/β. Its job is to aim the spend at B, and
+  aiming deliberately low would only add underspend.
+- **The risk check** uses the *whole* Gamma distribution. Mixing the Poisson
+  in-flight spend over it gives the negative-binomial tail (§3, step 3). So
+  uncertainty about k automatically widens the reserve while data are scarce and
+  narrows it as they accumulate. No separate safety margin for k is needed.
+
+**If k were not stable** (out of scope by assumption), the same statistics would
+work with forgetting: after each observed period, S ← γ·S + x and E ← γ·E + p·Δ,
+with γ < 1. Old data then fade, and the posterior stays wide enough to follow drift.
 
 ### Why this bounds total overspend by ε
 
@@ -291,7 +397,82 @@ What the results show:
    but sending only on a > 5 % change gives the lowest underspend with about
    50 messages per hour (`results/messages.png`).
 
-## 5. Limits and next steps
+## 5. Implementation without a numerics library (Elixir)
+
+The production center will be written in Elixir. Erlang's `:math` module has
+`exp`, `log`, `sin`, `sqrt` and `pow`, but not ln Γ, the incomplete beta or gamma
+functions, or even `log1p`. The controller needs exactly one non-elementary
+quantity, the tail of the in-flight spend:
+
+    P(X > m) = I_x(m + 1, α),    x = V / (β + V)      (negative binomial, §3)
+
+where I is the regularized incomplete beta function. The oracle and plug-in
+baselines also use the Poisson tail P(m + 1, μ), the regularized incomplete gamma
+function. Both are computed from elementary math with standard algorithms:
+
+| Function | Method | Accuracy |
+|---|---|---|
+| ln(1 + x) | Goldberg's trick: `u = 1 + x; u == 1 ? x : log(u)·x/(u − 1)` | a few ulps |
+| ln Γ(x) | Lanczos approximation, g = 7, 9 coefficients; reflection for x < 0.5 | ~1e-15 relative |
+| I_x(a, b) | prefactor exp(a·ln x + b·ln(1 − x) + lnΓ(a+b) − lnΓ(a) − lnΓ(b)) times a continued fraction (modified Lentz); use 1 − I_{1−x}(b, a) when x ≥ (a+1)/(a+b+2) | ~6e-11 relative |
+| P(a, x) | power series for x < a + 1, continued fraction for Q = 1 − P otherwise | ~1e-12 relative |
+
+Notes:
+
+- **Small tails are computed directly, not as 1 − (something close to 1).**
+  The tails that matter are around ε (10⁻³ to 10⁻⁹). They fall in the direct
+  branch of both algorithms, so they keep full relative precision.
+- **Few iterations are needed.** In the controller's working range the
+  continued fraction converges in 2–20 iterations (tolerance 10⁻¹⁵). The generic
+  worst case grows like √max(a, b), about 100–300 for budgets of 10⁴–10⁵ units.
+  The 10,000-iteration cap is only a safeguard.
+- **Precision.** With a, b ≈ 10⁴ the three ln Γ terms are about 10⁵ and mostly
+  cancel. Double precision still leaves about 10⁻¹¹ relative error in the
+  prefactor, far below what the risk check needs.
+
+**Checked at three levels:**
+
+1. `src/pacing/specfun.py`, the reference implementation, matches scipy within
+   10⁻⁹ relative on 3,000 random cases each for I_x and P(a, x). The ranges cover
+   a up to 2·10⁴, b from 0.5 to 2·10⁴, and x from 10⁻⁷ to 0.999, including tails
+   down to 10⁻¹² (`tests/test_specfun.py`).
+2. **End to end:** the full default simulation (40,000 runs) gives *identical*
+   results with the portable math and with scipy: the same overspend count and
+   the same underspend. Select it with `BayesRiskController(..., tails="portable")`.
+3. `elixir/pacing_math.ex` is a line-by-line port. `elixir/pacing_math_test.exs`
+   checks it on 126 cases whose expected values come from scipy (generated by
+   `scripts/gen_elixir_golden.py`).
+
+### Pure Elixir or a NIF?
+
+`elixir/c_src/pacing_math_nif.c` is the same algorithm in C, loaded as a NIF by
+`PacingMathNif`, with the same API as `PacingMath`. It uses its own Lanczos ln Γ
+rather than libm's `lgamma()`, because `lgamma()` writes the global `signgam` and
+so is not safe on concurrent scheduler threads. Build it with `make -C elixir`. The
+same 126 scipy cases test both modules, and on 5,000 random controller-like
+arguments the two agree to 10⁻¹¹ relative. Small differences are expected: C
+uses libm's `log1p`, and the prefactor magnifies the last digit of terms of about
+10⁵.
+
+Speed (Apple M-series, OTP 28; `make -C elixir bench`):
+
+| | pure Elixir | NIF |
+|---|---|---|
+| one tail evaluation | 0.8–9 µs | 0.06–0.65 µs (≈ 14× faster) |
+| one controller decision (~31 tail evaluations incl. bisection) | 67 µs | 5.7 µs |
+
+**Recommendation: use pure Elixir.** One campaign makes one decision every Δ = 5 s,
+so 67 µs is about 0.001 % of one core. The NIF becomes worthwhile only with many
+campaigns, roughly 10,000 or more deciding every second, where pure Elixir would
+take most of a core. Even then, consider the cost:
+
+- a bug in C can crash the whole BEAM node instead of one process;
+- the library has to be built for every target architecture;
+- C code is harder to review.
+
+Because the two modules share an API, switching later is a one-line change.
+
+## 6. Limits and next steps
 
 - **Optimality.** The controller is greedy for each step. It is not the solution
   of the full dynamic programme. It does match the known-k oracle, and the
@@ -302,14 +483,18 @@ What the results show:
   pace along it), k that drifts (discount old observations), a random delay (use
   its upper quantile or model its distribution), and a delay before clients
   receive a new p (add it to the in-flight window).
+- **Traffic that varies more than Poisson** (§2, *Why a Poisson process?*): the
+  assumption the ε guarantee is most sensitive to.
 - **Token leases as a hard cap** (§2, *Are tokens needed?*): simulate how much
   underspend the certain guarantee costs, as a function of r and the
   failure-report delay d_f, alone and as a backstop under the probabilistic
   controller.
 
-## 6. Running
+## 7. Running
 
 ```bash
-uv run pytest                          # 44 tests, ~6 s
+uv run pytest                          # 76 tests, ~7 s
 uv run python -m pacing.experiments    # full Monte Carlo, ~10 min (--quick: ~45 s)
+make -C elixir test                    # Elixir math + NIF (builds the NIF), 126 scipy cases
+make -C elixir bench                   # pure Elixir vs NIF speed
 ```

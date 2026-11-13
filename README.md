@@ -8,6 +8,9 @@ possible while keeping the chance of overspending at or below a chosen ε.
 - Problem statement: [INITIALMODEL.MD](INITIALMODEL.MD)
 - Model, strategy and why the guarantee holds: [MODEL.md](MODEL.md)
 - Simulation results: [results/summary.md](results/summary.md)
+- Elixir math kernel (Lanczos ln Γ, incomplete beta/gamma, no numerics library):
+  [elixir/pacing_math.ex](elixir/pacing_math.ex), and the same in C as a NIF:
+  [elixir/c_src/pacing_math_nif.c](elixir/c_src/pacing_math_nif.c); see MODEL.md §5
 
 ![sample runs](results/trajectories.png)
 
