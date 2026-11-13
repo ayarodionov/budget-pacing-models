@@ -3,6 +3,7 @@
 Initial problem statement and clarifications: `INITIALMODEL.MD`.
 Code: `src/pacing/` · tests: `tests/` · numbers and charts: `results/`.
 How k and the pace are computed, and the Elixir implementation: [IMPLEMENTATION.md](IMPLEMENTATION.md).
+Hard cap that makes overspend impossible: [BACKSTOP.md](BACKSTOP.md).
 
 ## 1. System configuration
 
@@ -221,6 +222,23 @@ constant ≈ d_f / r (≈ 5 min), so a lot of budget is left unspent unless:
   leases cap the damage from rare failures such as a lost stop message or a client
   that keeps bidding.
 
+**Simulated as a backstop**, with the full description in [BACKSTOP.md](BACKSTOP.md).
+The center grants tokens so that tokens used ≤ B + failures reported. That gives
+**zero overspend in every setting**, even for a controller that always bids at
+p = 1. The cost is the budget held by failed bids that have not been reported
+yet, roughly underspend ≈ (1 − r)·d_f′ / (e·r·T):
+- 0 % when every bid is charged (r = 1),
+- under 0.3 % at r = 0.5,
+- about 3 % when 90 % of bids fail and failures are reported after 30 s.
+
+With a cap in place, the probabilistic risk check is no longer needed for safety.
+
+The cap does not even need reports from clients. In version (b), granted tokens
+expire after one control step, and the center grants at most
+B − S_obs − (tokens granted in the last d seconds). That relies only on the
+budget and on d being a hard maximum. It costs about as much as failure reports
+delayed by d (BACKSTOP.md §7).
+
 **Other models where tokens would help:**
 - **Different bid prices.** A bid costs c units instead of 1. Tokens become the
   unit of money, and a bid uses c tokens.
@@ -329,6 +347,12 @@ What the results show:
    deviation from even pace goes from 1.2 % to 1.3–2.2 %. Recomputing every second
    but sending only on a > 5 % change gives the lowest underspend with about
    50 messages per hour (`results/messages.png`).
+9. **Overspend can be made impossible, not just unlikely, with a token cap**
+   ([BACKSTOP.md](BACKSTOP.md)). Zero overspends in every simulated setting. Its
+   cost depends on how many bids fail and how fast failures are reported: from
+   0 % when every bid is charged to about 3 % when 90 % of bids fail and
+   failures are reported after 30 s. Without tokens, a very small ε is the
+   alternative: 0.67 % underspend at ε = 10⁻⁹ and 0.78 % at ε = 10⁻¹².
 
 ## 5. Limits and next steps
 
@@ -343,16 +367,22 @@ What the results show:
   receive a new p (add it to the in-flight window).
 - **Traffic that varies more than Poisson** (§2, *Why a Poisson process?*): the
   assumption the ε guarantee is most sensitive to.
-- **Token leases as a hard cap** (§2, *Are tokens needed?*): simulate how much
-  underspend the certain guarantee costs, as a function of r and the
-  failure-report delay d_f, alone and as a backstop under the probabilistic
-  controller.
+- **Token leases, beyond the ideal pool** ([BACKSTOP.md](BACKSTOP.md) §6 and §8;
+  already simulated with one shared token pool):
+  - **Wallets.** Leases of L tokens to N clients leave up to about N·L tokens
+    unused when the budget runs out, which adds underspend. This needs a model
+    of lease size and of how unused tokens are returned.
+  - **A token-aware risk check.** Allow the cap to exceed B + F_obs − U by an
+    amount whose risk is ε, using the fact that the unresolved tokens follow a
+    Binomial(·, r) distribution. This would mostly remove the cost at small r
+    and slow failure reports, while keeping the overspend risk at ε.
 
 ## 6. Running
 
 ```bash
 uv run pytest                          # 76 tests, ~7 s
 uv run python -m pacing.experiments    # full Monte Carlo, ~10 min (--quick: ~45 s)
+uv run python -m pacing.backstop       # token-cap backstop experiment, versions (a) and (b), ~5 min
 make -C elixir test                    # Elixir math + NIF (builds the NIF), 126 scipy cases
 make -C elixir bench                   # pure Elixir vs NIF speed
 ```

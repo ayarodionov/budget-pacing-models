@@ -9,6 +9,7 @@ possible while keeping the chance of overspending at or below a chosen ε.
 - Model, strategy and why the guarantee holds: [MODEL.md](MODEL.md)
 - How k and the pace are computed, Elixir implementation: [IMPLEMENTATION.md](IMPLEMENTATION.md)
 - Simulation results: [results/summary.md](results/summary.md)
+- Hard cap that makes overspend impossible (token backstop): [BACKSTOP.md](BACKSTOP.md)
 - Elixir math kernel (Lanczos ln Γ, incomplete beta/gamma, no numerics library):
   [elixir/pacing_math.ex](elixir/pacing_math.ex), and the same in C as a NIF:
   [elixir/c_src/pacing_math_nif.c](elixir/c_src/pacing_math_nif.c); see IMPLEMENTATION.md §3
