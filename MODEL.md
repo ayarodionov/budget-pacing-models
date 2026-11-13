@@ -248,6 +248,34 @@ delayed by d (BACKSTOP.md §7).
   answer C does not hold), only a pre-set allowance limits what a client can spend
   after losing contact with the center.
 
+### Is the number of clients needed?
+
+**No, not in anything modelled here.**
+
+- **Main model and controller.** Each request goes to one random client, and all
+  clients bid with the same p. Splitting a Poisson stream at random and then
+  thinning it keeps it Poisson, so total spend is Poisson(k·p) for any N (see
+  *Reduction*). N appears in each client's share and cancels when the shares are
+  added. `test_number_of_clients_does_not_matter` checks this with 1, 7 and
+  500 clients.
+- **Token-cap backstop, versions (a) and (b)** ([BACKSTOP.md](BACKSTOP.md)). Both
+  rules limit the *total* number of tokens, through tokens used and failures
+  reported, or through tokens granted and the budget. Neither the rules nor the
+  proofs mention N.
+
+**Where N would start to matter:**
+
+| Extension | Why | Does the center need N? |
+|---|---|---|
+| Tokens held in per-client wallets (leases of L tokens) | up to about N·L tokens can sit unused when the budget runs out, and that budget is lost | helpful, not required. The center learns how many clients hold leases from the lease requests. Shrinking leases near the end works without N. |
+| Safety from a per-client rate limit (at most m bids/s per client) | worst-case in-flight spend is N·m·(d + Δ) | **yes**. This is one reason to prefer the token cap. |
+| Clients that differ (acceptance probability, cost per bid) | one broadcast p no longer fits all, and the spend rate depends on the mix of clients | possibly, or at least the mix of client types |
+| Requests that do not arrive independently (for example one request reaching several clients) | the random-split argument fails, and N can change the variance of spend | possibly |
+
+For this model, point 3 of the problem statement (each request reaches one
+client chosen at random with equal probability) and answer F (the same p for
+every client) rule out the last two.
+
 ## 3. Strategy (`BayesRiskController`)
 
 At every control step:
