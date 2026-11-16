@@ -268,12 +268,12 @@ defmodule PacingMathTest do
 
   test "edge cases" do
     for mod <- @impls do
-      assert PacingMath.nb_tail(-1, 2.0, 1.0, 1.0) == 1.0
-      assert PacingMath.nb_tail(3, 2.0, 1.0, 0.0) == 0.0
-      assert PacingMath.poisson_tail(-0.5, 2.0) == 1.0
-      assert PacingMath.poisson_tail(3, 0.0) == 0.0
-      assert PacingMath.betainc(2.0, 3.0, 0.0) == 0.0
-      assert PacingMath.betainc(2.0, 3.0, 1.0) == 1.0
+      assert mod.nb_tail(-1, 2.0, 1.0, 1.0) == 1.0
+      assert mod.nb_tail(3, 2.0, 1.0, 0.0) == 0.0
+      assert mod.poisson_tail(-0.5, 2.0) == 1.0
+      assert mod.poisson_tail(3, 0.0) == 0.0
+      assert mod.betainc(2.0, 3.0, 0.0) == 0.0
+      assert mod.betainc(2.0, 3.0, 1.0) == 1.0
     end
 
     assert PacingMath.log1p(1.0e-17) == 1.0e-17

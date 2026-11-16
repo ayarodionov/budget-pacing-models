@@ -14,6 +14,7 @@ defmodule Bench do
 
     Enum.reduce(1..30, {0.0, 1.0}, fn _, {lo, hi} ->
       mid = (lo + hi) / 2
+
       if mod.nb_tail(remaining, alpha, beta, w + mid * dt) - q0 <= allow,
         do: {mid, hi},
         else: {lo, mid}
@@ -33,13 +34,19 @@ IO.puts("nb_tail, ns per call (#{n} calls)")
 for {label, {m, a, b, v}} <- cases do
   e = Bench.per_call(fn -> PacingMath.nb_tail(m, a, b, v) end, n)
   c = Bench.per_call(fn -> PacingMathNif.nb_tail(m, a, b, v) end, n)
-  IO.puts("  #{String.pad_trailing(label, 52)} Elixir #{round(e)}  NIF #{round(c)}  (#{Float.round(e / c, 1)}x)")
+
+  IO.puts(
+    "  #{String.pad_trailing(label, 52)} Elixir #{round(e)}  NIF #{round(c)}  (#{Float.round(e / c, 1)}x)"
+  )
 end
 
 nd = 20_000
 e = Bench.per_call(fn -> Bench.decision(PacingMath, 60, 5001.0, 50.0, 0.42, 0.07) end, nd)
 c = Bench.per_call(fn -> Bench.decision(PacingMathNif, 60, 5001.0, 50.0, 0.42, 0.07) end, nd)
-IO.puts("one controller decision (31 tail evaluations), µs: Elixir #{Float.round(e / 1000, 1)}  NIF #{Float.round(c / 1000, 1)}")
+
+IO.puts(
+  "one controller decision (31 tail evaluations), µs: Elixir #{Float.round(e / 1000, 1)}  NIF #{Float.round(c / 1000, 1)}"
+)
 
 # The real controller over a whole simulated campaign (default scenario, 720 periods),
 # replaying the visible spend recorded from the Python controller.
@@ -57,6 +64,9 @@ end
 for math <- [PacingMath, PacingMathNif] do
   campaign.(math)
   {us, _} = :timer.tc(fn -> for _ <- 1..20, do: campaign.(math) end)
-  IO.puts("PacingController.step/2 over a campaign, #{inspect(math)}: " <>
-            "#{Float.round(us / 20 / length(spends), 1)} µs per period")
+
+  IO.puts(
+    "PacingController.step/2 over a campaign, #{inspect(math)}: " <>
+      "#{Float.round(us / 20 / length(spends), 1)} µs per period"
+  )
 end

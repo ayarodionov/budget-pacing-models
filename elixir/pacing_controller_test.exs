@@ -81,7 +81,10 @@ defmodule PacingControllerTest do
 
       for [t, s, e, w, _, _] <- Enum.take_every(g["steps"], 37) do
         {pa, _, _} = PacingController.decide(controller(g["opts"]), t, s, e, w)
-        {pb, _, _} = PacingController.decide(controller(g["opts"], math: PacingMathNif), t, s, e, w)
+
+        {pb, _, _} =
+          PacingController.decide(controller(g["opts"], math: PacingMathNif), t, s, e, w)
+
         assert close?(pa, pb)
       end
     end

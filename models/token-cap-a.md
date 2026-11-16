@@ -8,7 +8,8 @@ delay d, and a Poisson burst has no upper limit. This file describes the cap
 with failure reports, why it works, and what it costs. The version without
 client reports is in [token-cap-b.md](token-cap-b.md).
 
-Code: `src/pacing/backstop.py` (`mode="reports"`) · tests: `tests/test_backstop.py`
+Code: `src/pacing/backstop.py` (`mode="reports"`), Elixir `TokenCap.Reports` in
+[`elixir/token_cap.ex`](../elixir/token_cap.ex) · tests: `tests/test_backstop.py`
 · results: [results/token-cap-a.md](../results/token-cap-a.md),
 `results/token-cap-a.png` (`uv run python -m pacing.backstop`).
 

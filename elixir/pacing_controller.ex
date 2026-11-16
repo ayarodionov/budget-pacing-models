@@ -118,6 +118,19 @@ defmodule PacingController do
     {p, send?, c}
   end
 
+  @doc """
+  Correct the exposure of the period just decided by `step/2`, when not every bid
+  could be made: pass the p that actually reached the budget, for example
+  `TokenCap.Reports.effective_p/3` when a token cap blocked bids. Without this,
+  blocked bids look like a lower k, and pacing would push p up to compensate.
+  """
+  @spec correct_exposure(t, number) :: t
+  def correct_exposure(%{in_flight: []} = c, p_eff),
+    do: %{c | observed_exposure: c.observed_exposure + (p_eff - c.p_last) * c.step}
+
+  def correct_exposure(c, p_eff),
+    do: %{c | in_flight: List.replace_at(c.in_flight, -1, p_eff * 1.0)}
+
   # keep the newest `d` periods in flight, the rest has landed
   defp split_landed(ps, d) do
     n = max(length(ps) - d, 0)

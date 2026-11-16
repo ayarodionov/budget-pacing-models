@@ -8,7 +8,8 @@ has: the tokens it granted, and the budget.
 It builds on [system.md](system.md) and on the idea and cost analysis of
 [token-cap-a.md](token-cap-a.md) §1 and §4.
 
-Code: `src/pacing/backstop.py` (`mode="grants"`) · tests: `tests/test_backstop.py`
+Code: `src/pacing/backstop.py` (`mode="grants"`), Elixir `TokenCap.Grants` in
+[`elixir/token_cap.ex`](../elixir/token_cap.ex) · tests: `tests/test_backstop.py`
 · results: [results/token-cap-b.md](../results/token-cap-b.md)
 (`uv run python -m pacing.backstop`).
 

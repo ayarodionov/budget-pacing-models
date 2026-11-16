@@ -52,6 +52,7 @@ def simulate_with_backstop(
     mode: str = "reports",
     grant_share: float | None = None,
     grant_headroom: float | None = None,
+    trace: list | None = None,
 ) -> BackstopResult:
     """Token-level simulation. ``cap=False`` gives the same process without the backstop.
 
@@ -65,6 +66,9 @@ def simulate_with_backstop(
                       * p * step)), i.e. it assumes the center knows the bid demand
                       (as it would from usage counts). Without reports the center
                       cannot correct its exposure for blocked bids.
+
+    ``trace``, if a list, receives one dict per control step for run 0 (what the
+    center saw and decided); used to generate the Elixir golden tests.
     """
     if mode not in ("reports", "grants"):
         raise ValueError("mode must be 'reports' or 'grants'")
@@ -95,6 +99,7 @@ def simulate_with_backstop(
 
     controller.reset(n_runs)
     for i in range(n_steps):
+        seen = float(c * obs_spend[0])
         p = np.clip(controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0)
         wanted = rng.poisson(lam * p * dt)  # bids the clients would make
         grant = None
@@ -139,8 +144,13 @@ def simulate_with_backstop(
             np.maximum(inflight, 0.0, out=inflight)
             granted_unresolved -= ring_g[:, sj]  # its spend is now visible
         jf = i - f_steps
-        if jf >= 0:
-            fail_obs += ring_f[:, jf % fring]
+        reported = ring_f[:, jf % fring].copy() if jf >= 0 else np.zeros(n_runs, dtype=np.int64)
+        fail_obs += reported
+        if trace is not None:
+            trace.append({"observed_spend": seen, "p": float(p[0]), "wanted": int(wanted[0]),
+                          "allowance": int(allowance[0]) if cap else None,
+                          "grant": None if grant is None else int(grant[0]),
+                          "tokens": int(tokens[0]), "failures_reported": int(reported[0])})
 
         dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)
         np.maximum(max_dev, dev, out=max_dev)

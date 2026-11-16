@@ -48,9 +48,10 @@ Table: [results/overview.md](results/overview.md).
   the pace is calculated, and how to compute the special functions without a
   numerics library.
 - [elixir/README.md](elixir/README.md): the Elixir implementation. The
-  controller (`PacingController`, bit-identical to the Python one) and the math it
-  needs (Lanczos ln Γ, incomplete beta and gamma functions) in pure Elixir and as
-  a C NIF, with API, build, tests and benchmark.
+  controller (`PacingController`, bit-identical to the Python one), the token cap
+  (`TokenCap.Reports` and `TokenCap.Grants`, versions (a) and (b)), and the math
+  the controller needs (Lanczos ln Γ, incomplete beta and gamma functions) in pure
+  Elixir and as a C NIF, with API, build, tests and benchmark.
 - Python simulation and controllers: `src/pacing/`. Tests: `tests/`.
 
 ### Sample runs of the probabilistic controller
@@ -72,6 +73,6 @@ uv run pytest                          # Python tests, ~7 s
 uv run python -m pacing.experiments    # probabilistic controller, ~10 min (--quick: ~45 s)
 uv run python -m pacing.backstop       # token cap, versions (a) and (b), ~5 min (--quick: ~30 s)
 uv run python -m pacing.overview       # README comparison chart, ~45 s
-make -C elixir test                    # Elixir math vs scipy, controller vs Python traces (builds the NIF)
+make -C elixir test                    # Elixir math vs scipy; controller and token cap vs Python traces
 make -C elixir bench                   # pure Elixir vs NIF speed
 ```
