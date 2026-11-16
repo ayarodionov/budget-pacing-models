@@ -330,7 +330,78 @@ guarantees true when clients join, leave, crash or lose contact.
   then adds at most about L seconds of spend at its last p. Keep L small compared
   with the delay d, or count the extra spend into the in-flight reserve.
 
-The center never learns who the clients are or how many there are.
+The center keeps no state about clients and never learns who they are.
+
+### Push or pull
+
+p can reach the clients in two ways. Both satisfy the rules above. They differ
+in delay, in who carries the load, and in how they fail. Below, N is the number
+of clients and P the polling interval.
+
+- **Push.** The center publishes `{epoch, seq, p}` every Δ, and clients receive
+  it. Clients subscribe to the channel (a pub/sub group or a broker topic). The
+  delivery layer keeps their addresses, not their identities.
+- **Pull.** Every client fetches the latest `{epoch, seq, p}` every P, from the
+  center or from a shared store. Nobody keeps a list of clients.
+
+| | Push | Pull |
+|---|---|---|
+| **Delay before a new p is used** | network latency, about 1 ms inside a cluster | up to P + latency (P/2 on average); about a microsecond from a store on the same node |
+| **Delay of a stop (p = 0)** | about 1 ms | up to P: matters if p = 0 serves as an emergency stop |
+| **Cost in underspend** (default scenario, ε = 10⁻³) | none: about 0.43 % of B | with P = Δ = 5 s, δ_max ≈ 5 s, so √(d + Δ + δ_max)/√(d + Δ) = √(40/35): about 0.46 %; with P = 1 s, under +0.01 points |
+| **Center load per period** | N sends (one per node with `Phoenix.PubSub`) | N requests that each need an answer. Served by the center's own process they queue up on it; served from a cache (ETS) they cost the center nothing |
+| **Who knows the clients** | the delivery layer knows their addresses | nobody (the poll rate shows about N/P) |
+| **Clients joining and leaving** | join or leave the group; `:pg` removes dead processes | nothing to manage |
+| **Clients outside BEAM or behind a load balancer** | needs a broker or open connections (websockets) | plain HTTP or gRPC requests |
+| **Lost message** | the next period fixes it; silence rule after L | the next poll retries; silence rule after L |
+| **Center crash** | messages stop; clients stop after L | polls fail; clients stop after L |
+| **Main trap** | a relay that re-sends an old p as new | a shared store that keeps serving the last p after the center died. Clients must check that `seq` *advances*, not only that a poll succeeded |
+| **Load spikes** | none: the center paces the sends | polls that happen at the same moment hit together; add random jitter to each client's polling time |
+| **Slow client** | its mailbox queues the periods; it applies them in order | it polls late, and its silence rule may stop it (safe) |
+| **Token cap (b)** | grants are per-client messages: natural to push | a client fetching its grant must identify itself, so it registers anyway; fetching late also shortens the usable part of the grant |
+
+**Silence rule, in both cases.** A client sets p = 0 when `seq` has not
+advanced for L seconds: no newer message (push), or polls that fail or keep
+returning the same `seq` (pull).
+
+**Delivery delay.** A new p takes effect a little after the center decides it.
+Call the largest such delay δ_max: network or broker latency for push, P plus
+latency for pull. During that time clients still bid at the previous p. The
+controller covers it by counting max(p_old, p_new) · δ_max as extra exposure in
+flight. The current model takes δ_max = 0, as answer C says. If δ_max is not
+counted, the ε guarantee is slightly overstated.
+
+**Relays.** A broker, or a forwarding process on each node, may sit between the
+center and the clients. It must hold no state of its own and must not invent
+messages. In particular it must never re-send an old p as if it were new,
+because that would keep a cut-off client bidding. The `seq` rule protects
+against this: only the center creates a newer `seq`, so repeats do not reset
+the silence timer.
+
+**The cost per bid.** Every bid asks "bid or not?". If that question is a
+message to a process (a `GenServer.call`, as in the current `PacingClient`),
+that process becomes the bottleneck at thousands of bids per second, whether p
+arrives by push or by pull. The fast design is a **hybrid**:
+
+1. The center pushes `{epoch, seq, p}` once per node per period
+   (`Phoenix.PubSub` or a forwarding process per node).
+2. On each node the forwarder writes it, with its arrival time, to an ETS table
+   with `read_concurrency: true`.
+3. Each bid reads that table: a read of well under a microsecond, with no
+   message. The silence rule checks the stored arrival time and `seq`.
+
+Push carries p across the network, at one message per node per period; pull
+does the per-bid read, locally and at almost no cost. The delay stays at
+network level, so δ_max ≈ 0 and underspend does not change.
+
+**Which to use.**
+
+| Situation | Use |
+|---|---|
+| Clients are processes in one Erlang cluster, moderate bid rates | **push** (the current `PacingCenter` sends to the `:pg` group) |
+| High bid rates, or many bidders per node | **hybrid**: push to a node-local ETS table, read it at every bid |
+| Clients outside BEAM, behind a load balancer, or very many | **pull** over HTTP or gRPC, with P ≤ Δ and jitter, served from a cache rather than the center's process; count δ_max = P + latency in the in-flight reserve |
+| Token cap (b) | **push** the grants (per-client messages); pull would need registration anyway |
 
 ### Token caps: registration with leases
 
@@ -346,16 +417,17 @@ client that disappears while holding tokens may still be spending them.
    again with the same `client_id` replaces the old lease instead of adding a
    second client.
 3. The client keeps the lease alive with heartbeats. In version (a) it sends its
-   used and failed counts with each heartbeat. A lease that gets no heartbeat
-   within `lease_ttl` is *lost*.
+   failure count with each heartbeat. A lease that gets no heartbeat within
+   `lease_ttl` is *lost*.
 
 **Handing out tokens.**
 
 - **Version (b).** Each period the center splits the grant G among the live
-  leases: in proportion to each client's recent usage, or evenly when nothing is
-  known yet. A grant is valid only for its period.
+  leases. Clients report nothing about their bids, so the split is even (or by
+  a fixed weight declared at registration, such as a client's capacity). A
+  grant is valid only for its period.
 - **Version (a).** Each client holds a small wallet of L tokens and asks for a
-  top-up when it runs low, reporting used and failed counts with the request.
+  top-up when it runs out, reporting its failure count with the request.
   The allowance A = B/c + F_obs − U counts every token *handed out* as used
   until the client returns or reports it. Tokens sitting in wallets therefore
   hold budget, which adds to underspend, so wallets should shrink near the end
@@ -363,17 +435,23 @@ client that disappears while holding tokens may still be spending them.
 
 **Leaving and losing contact: where safety is decided.**
 
-- **Graceful leave.** `deregister` returns the unused tokens and sends final
-  used and failed counts. The center can reuse the returned tokens at once.
+- **Graceful leave.** `deregister` returns the unused tokens and sends the
+  final failure count. The center can reuse the returned tokens at once.
 - **Lost lease.** The center cannot tell a crashed client from one that is cut
   off and still bidding, so it must assume the worst.
-  - Version (a): the tokens handed to that client stay counted as used. Only
-    after `lease_ttl` + d + d_f may unused tokens return to the pool. By then the
-    client has stopped (next point), its last bids are visible in the budget,
-    and their failures have been reported. A failure reported later is counted
-    as usual.
+  - Version (a): the tokens handed to that client stay counted as used, with no
+    time limit. Waiting does not help: the budget shows only total spend, so
+    the center can never tell how many of a silent client's tokens were spent,
+    failed or left unused. They are credited only if the same client registers
+    again and reports the old lease (`previous`: its failures and unused
+    tokens). A client that never comes back costs at most what it held: one
+    wallet plus its unreported failures. Small wallets keep that cost small.
   - Version (b): nothing to do. Grants expire with their period, and the spend
     of the last grant is visible after d, as for any other grant.
+- **Credits are bounded per lease.** The failures and returned tokens credited
+  to a lease never exceed the tokens it was handed, so a buggy client cannot
+  free more budget than it held. A false report within that bound would still
+  break the guarantee: clients must be trusted to report honestly.
 - **The client enforces its own lease.** In version (a), when its lease expires
   without renewal, the client drops its remaining tokens and stops bidding. In
   version (b) it uses a grant only within its period, by its own clock; leave a
@@ -384,14 +462,16 @@ client that disappears while holding tokens may still be spending them.
 Combined with these rules, the caps keep their guarantee whatever clients do:
 join, leave, crash, or keep bidding while cut off.
 
-**Mapping to Elixir/OTP.** One GenServer per campaign holds the
-`PacingController` and `TokenCap` state ([../elixir/README.md](../elixir/README.md))
-and the lease table, and runs a step every Δ. Membership comes from `Registry` on
-one node, or `:pg` or `Phoenix.Presence` across a cluster. Inside the cluster
-the center can `Process.monitor` client processes to notice crashes quickly. Even
-so, it should treat a lost process as a lost lease, because a network split looks
-the same as a crash. Each client keeps its own silence timer (p = 0 after L
-seconds) and lease timer, so it fails safe without the center.
+**Implementation in Elixir.** `PacingCenter` and `PacingClient`
+([../elixir/README.md](../elixir/README.md#registration-pacingcenter-and-pacingclient))
+implement this section. One `PacingCenter` process per campaign holds the
+`PacingController` and `TokenCap` state and the lease table, and runs a step
+every Δ. It broadcasts p through an `:pg` group, which works on one node and
+across a cluster. A crashed client is noticed by its missing heartbeats, not by
+`Process.monitor`, because a network split looks the same as a crash and must
+be treated as a lost lease. `PacingClient` checks the silence limit, its lease
+and its grant against its own clock at every bid, so it fails safe without the
+center.
 
 ## 7. Extensions (all models)
 

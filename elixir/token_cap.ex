@@ -37,9 +37,10 @@ defmodule TokenCap.Reports do
       cap = TokenCap.Reports.record_use(cap, n)     # clients used n tokens
       cap = TokenCap.Reports.record_failures(cap, m) # m bids reported as failed
 
-  Invariant: tokens used U ≤ floor(B/c) + F_obs, so realised spend
-  ≤ c·(U − F_total) ≤ c·(U − F_obs) ≤ B. A late failure report only holds budget
-  longer; a false one would break the guarantee.
+  Invariant: tokens used U ≤ floor(B/c) + F_obs + R, so realised spend
+  ≤ c·(U − F_total − R) ≤ c·(U − F_obs − R) ≤ B, where R counts tokens returned
+  unused (`record_returned/2`). A late failure report only holds budget longer;
+  a false one would break the guarantee.
 
   Clients should also report how many bids were blocked, so the controller's
   exposure can be corrected: see `PacingController.correct_exposure/2` and
@@ -47,7 +48,7 @@ defmodule TokenCap.Reports do
   """
 
   @enforce_keys [:budget_tokens]
-  defstruct [:budget_tokens, used: 0, failures_reported: 0]
+  defstruct [:budget_tokens, used: 0, failures_reported: 0, returned: 0]
 
   @type t :: %__MODULE__{}
 
@@ -62,7 +63,8 @@ defmodule TokenCap.Reports do
 
   @doc "Tokens that may still be used: max(floor(B/c) + F_obs − U, 0)."
   @spec allowance(t) :: non_neg_integer
-  def allowance(cap), do: max(cap.budget_tokens + cap.failures_reported - cap.used, 0)
+  def allowance(cap),
+    do: max(cap.budget_tokens + cap.failures_reported + cap.returned - cap.used, 0)
 
   @doc "Clients used `n` tokens. Using more than `allowance/1` breaks the guarantee."
   @spec record_use(t, non_neg_integer) :: t
@@ -72,6 +74,14 @@ defmodule TokenCap.Reports do
   @spec record_failures(t, non_neg_integer) :: t
   def record_failures(cap, n) when is_integer(n) and n >= 0,
     do: %{cap | failures_reported: cap.failures_reported + n}
+
+  @doc """
+  `n` tokens counted as used were returned unused (for example from a client's
+  wallet when it leaves). Like a failure, they can no longer cost anything.
+  """
+  @spec record_returned(t, non_neg_integer) :: t
+  def record_returned(cap, n) when is_integer(n) and n >= 0,
+    do: %{cap | returned: cap.returned + n}
 
   @doc """
   The p that actually reached the budget in a period where `used` of `wanted`
