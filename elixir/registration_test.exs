@@ -290,4 +290,127 @@ defmodule RegistrationTest do
     # is the price of the rule that a lost lease keeps its tokens counted.
     assert spent > 0
   end
+
+  # ------------------------------------------------------------------ fast path (hybrid)
+
+  defp relay(c, campaign, cp) do
+    {now, _} = cp
+    table = :"relay_#{System.unique_integer([:positive])}"
+    {:ok, r} = PacingRelay.start_link(center: c, campaign: campaign, table: table, clock: now)
+    {r, table}
+  end
+
+  test "fast path: a handle bids without any message to the client process" do
+    cp = clock()
+    {c, campaign} = center(:broadcast, clock_pair: cp)
+    a = client(c, campaign, nil, clock_pair: cp)
+    tick(c)
+    h = PacingClient.handle(a)
+
+    # a suspended process cannot answer a call, so these bids sent no message
+    :sys.suspend(a)
+    assert Enum.all?(for _ <- 1..1000, do: PacingClient.bid?(h))
+    :sys.resume(a)
+    assert PacingClient.info(a).bids == 1000
+  end
+
+  test "fast path, (a): a wallet is used without messages; the client is called only to top up" do
+    cp = clock()
+    {c, campaign} = center(:reports, clock_pair: cp, cap: [budget: 100])
+    a = client(c, campaign, "a", clock_pair: cp, wallet_size: 4)
+    tick(c)
+    h = PacingClient.handle(a)
+    # the first bid tops up the wallet (slow path), 3 tokens remain
+    assert PacingClient.bid?(h)
+
+    :sys.suspend(a)
+    assert Enum.all?(for _ <- 1..3, do: PacingClient.bid?(h))
+    :sys.resume(a)
+
+    # wallet empty: the next bid goes through the client for a top-up
+    assert PacingClient.bid?(h)
+    assert allowance(c) == 100 - 8
+  end
+
+  test "fast path, (a): when the budget is used up, bids are refused without calls" do
+    cp = clock()
+    {c, campaign} = center(:reports, clock_pair: cp, cap: [budget: 3])
+    a = client(c, campaign, "a", clock_pair: cp, wallet_size: 4)
+    tick(c)
+    h = PacingClient.handle(a)
+    assert Enum.all?(for _ <- 1..3, do: PacingClient.bid?(h))
+    # this one asks the center, gets nothing, and sets a retry time
+    refute PacingClient.bid?(h)
+    :sys.suspend(a)
+    refute PacingClient.bid?(h)
+    :sys.resume(a)
+  end
+
+  test "fast path, (a): many processes bidding at once never take more than they were handed" do
+    cp = clock()
+    {c, campaign} = center(:reports, clock_pair: cp, cap: [budget: 1000])
+    a = client(c, campaign, "a", clock_pair: cp, wallet_size: 7)
+    tick(c)
+    h = PacingClient.handle(a)
+
+    yes =
+      1..20
+      |> Task.async_stream(fn _ -> Enum.count(1..200, fn _ -> PacingClient.bid?(h) end) end)
+      |> Enum.reduce(0, fn {:ok, n}, acc -> acc + n end)
+
+    assert yes == 1000
+    info = PacingClient.info(a)
+    assert info.bids == 1000
+    assert info.tokens == 0
+    assert allowance(c) == 0
+  end
+
+  test "fast path, (b): concurrent bidders use exactly the grant" do
+    cp = clock()
+
+    {c, campaign} =
+      center(:grants, clock_pair: cp, cap: [budget: 200, delay: 10, step: 5, share: 0.5])
+
+    a = client(c, campaign, "a", clock_pair: cp)
+    tick(c)
+    h = PacingClient.handle(a)
+
+    yes =
+      1..10
+      |> Task.async_stream(fn _ -> Enum.count(1..50, fn _ -> PacingClient.bid?(h) end) end)
+      |> Enum.reduce(0, fn {:ok, n}, acc -> acc + n end)
+
+    assert yes == 100
+  end
+
+  test "relay: one subscriber per node, clients read p from its table" do
+    cp = {_, advance} = clock()
+    {c, campaign} = center(:broadcast, clock_pair: cp)
+    {r, table} = relay(c, campaign, cp)
+    clients = for _ <- 1..3, do: client(c, campaign, nil, clock_pair: cp, relay: table)
+
+    # only the relay is subscribed, so the center sends one message per period
+    assert :pg.get_members(PacingCenter.PG, {:pacing, campaign}) == [r]
+
+    tick(c)
+    handles = Enum.map(clients, &PacingClient.handle/1)
+    assert Enum.all?(handles, &PacingClient.bid?/1)
+
+    # an old message to the relay changes nothing
+    [{_, e, s, _, _}] = :ets.lookup(table, campaign)
+    send(r, {:pacing_p, campaign, e, s - 1, 0.0})
+    assert Enum.all?(handles, &PacingClient.bid?/1)
+
+    # silence: every client on the node stops
+    advance.(16)
+    refute Enum.any?(handles, &PacingClient.bid?/1)
+    tick(c)
+    assert Enum.all?(handles, &PacingClient.bid?/1)
+
+    # the relay dies: its table goes with it, and nobody bids
+    Process.unlink(r)
+    Process.exit(r, :kill)
+    Process.sleep(5)
+    refute Enum.any?(handles, &PacingClient.bid?/1)
+  end
 end

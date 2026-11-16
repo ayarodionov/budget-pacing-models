@@ -379,7 +379,7 @@ against this: only the center creates a newer `seq`, so repeats do not reset
 the silence timer.
 
 **The cost per bid.** Every bid asks "bid or not?". If that question is a
-message to a process (a `GenServer.call`, as in the current `PacingClient`),
+message to a process (a `GenServer.call`, as `PacingClient.bid?/1` does when given the pid),
 that process becomes the bottleneck at thousands of bids per second, whether p
 arrives by push or by pull. The fast design is a **hybrid**:
 
@@ -390,6 +390,10 @@ arrives by push or by pull. The fast design is a **hybrid**:
 3. Each bid reads that table: a read of well under a microsecond, with no
    message. The silence rule checks the stored arrival time and `seq`.
 
+This is implemented as `PacingRelay` and the `PacingClient.Handle` fast path
+([../elixir/README.md](../elixir/README.md#registration-pacingcenter-and-pacingclient)):
+about 0.1 µs per bid, against 0.8 µs when each bid asks the client process.
+
 Push carries p across the network, at one message per node per period; pull
 does the per-bid read, locally and at almost no cost. The delay stays at
 network level, so δ_max ≈ 0 and underspend does not change.
@@ -398,8 +402,8 @@ network level, so δ_max ≈ 0 and underspend does not change.
 
 | Situation | Use |
 |---|---|
-| Clients are processes in one Erlang cluster, moderate bid rates | **push** (the current `PacingCenter` sends to the `:pg` group) |
-| High bid rates, or many bidders per node | **hybrid**: push to a node-local ETS table, read it at every bid |
+| Clients are processes in one Erlang cluster, moderate bid rates | **push** (`PacingCenter` sends to the `:pg` group) |
+| High bid rates, or many bidders per node | **hybrid**: push to a node-local ETS table, read it at every bid (`PacingRelay`, `PacingClient.Handle`) |
 | Clients outside BEAM, behind a load balancer, or very many | **pull** over HTTP or gRPC, with P ≤ Δ and jitter, served from a cache rather than the center's process; count δ_max = P + latency in the in-flight reserve |
 | Token cap (b) | **push** the grants (per-client messages); pull would need registration anyway |
 

@@ -70,3 +70,38 @@ for math <- [PacingMath, PacingMathNif] do
       "#{Float.round(us / 20 / length(spends), 1)} µs per period"
   )
 end
+
+# PacingClient: one bid decision through a call to the client process, against the
+# fast path (a Handle read by the bidding process itself). Broadcast mode, p = 1.
+defmodule BenchP do
+  def step(p, _), do: {p, true, p}
+end
+
+{:ok, center} =
+  PacingCenter.start_link(campaign: :bench, controller: {BenchP, 1.0}, visible_spend: fn -> 0 end,
+                          step_ms: 1_000)
+
+{:ok, client} = PacingClient.start_link(center: center, campaign: :bench)
+Process.sleep(20)
+h = PacingClient.handle(client)
+nb = 200_000
+call_ns = Bench.per_call(fn -> PacingClient.bid?(client) end, nb)
+fast_ns = Bench.per_call(fn -> PacingClient.bid?(h) end, nb)
+IO.puts("PacingClient.bid?/1, one bidder, ns per bid: call #{round(call_ns)}  handle #{round(fast_ns)}")
+
+throughput = fn bid, procs ->
+  per = div(nb, procs)
+  {us, _} =
+    :timer.tc(fn ->
+      1..procs
+      |> Task.async_stream(fn _ -> for _ <- 1..per, do: bid.() end, max_concurrency: procs, timeout: :infinity)
+      |> Stream.run()
+    end)
+
+  round(per * procs / us)
+end
+
+procs = System.schedulers_online()
+IO.puts("PacingClient.bid?/1, #{procs} bidders at once, million bids/s: " <>
+          "call #{throughput.(fn -> PacingClient.bid?(client) end, procs)}  " <>
+          "handle #{throughput.(fn -> PacingClient.bid?(h) end, procs)}")
