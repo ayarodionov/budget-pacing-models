@@ -40,3 +40,23 @@ nd = 20_000
 e = Bench.per_call(fn -> Bench.decision(PacingMath, 60, 5001.0, 50.0, 0.42, 0.07) end, nd)
 c = Bench.per_call(fn -> Bench.decision(PacingMathNif, 60, 5001.0, 50.0, 0.42, 0.07) end, nd)
 IO.puts("one controller decision (31 tail evaluations), µs: Elixir #{Float.round(e / 1000, 1)}  NIF #{Float.round(c / 1000, 1)}")
+
+# The real controller over a whole simulated campaign (default scenario, 720 periods),
+# replaying the visible spend recorded from the Python controller.
+g = "controller_golden.json" |> File.read!() |> JSON.decode!() |> Map.fetch!("cases") |> hd()
+opts = Enum.map(g["opts"], fn {k, v} -> {String.to_existing_atom(k), v} end)
+spends = Enum.map(g["steps"], fn [_, s | _] -> s end)
+
+campaign = fn math ->
+  Enum.reduce(spends, PacingController.new([math: math] ++ opts), fn s, c ->
+    {_, _, c} = PacingController.step(c, s)
+    c
+  end)
+end
+
+for math <- [PacingMath, PacingMathNif] do
+  campaign.(math)
+  {us, _} = :timer.tc(fn -> for _ <- 1..20, do: campaign.(math) end)
+  IO.puts("PacingController.step/2 over a campaign, #{inspect(math)}: " <>
+            "#{Float.round(us / 20 / length(spends), 1)} µs per period")
+end

@@ -1,16 +1,18 @@
 # Implementation details
 
-Companion to [models/probabilistic.md](../models/probabilistic.md), which states the
+Companion to [models/probabilistic.md](models/probabilistic.md), which states the
 controller and its overspend guarantee. The shared system and formal model are in
-[models/system.md](../models/system.md). This file explains how the controller
-computes its two inputs and how to implement the math in Elixir:
+[models/system.md](models/system.md). This file explains how the controller
+computes its two inputs and how to implement the math in Elixir. The Elixir
+controller itself is [elixir/pacing_controller.ex](elixir/pacing_controller.ex); see
+[elixir/README.md](elixir/README.md) for its API.
 
 1. [How k is estimated](#1-how-k-is-estimated)
 2. [How the pace is calculated](#2-how-the-pace-is-calculated), including [the end-game](#the-end-game)
 3. [Implementation without a numerics library (Elixir)](#3-implementation-without-a-numerics-library-elixir)
 
 **Units.** A realised token costs a fixed c budget units
-([system.md](../models/system.md) §2). The controller works in **spends** (realised
+([system.md](models/system.md) §2). The controller works in **spends** (realised
 tokens): it divides the visible spend and the budget by c on input, and nothing
 else changes. In this file B, S_obs and "units" mean spends; with c = 1, the
 default, they are also budget units. Code: `_Pacer._events` in `controllers.py`.
@@ -35,7 +37,7 @@ k̂ ≈ 798 / 8.0 ≈ 100 units/s.
 
 **Why divide by E and not by elapsed time.** p changes over time, so each second
 counts with the weight p it had. In period j the spend is Poisson(k·p_j·Δ)
-([system.md](../models/system.md) §2, *Reduction*). Multiplying these probabilities over all periods gives a
+([system.md](models/system.md) §2, *Reduction*). Multiplying these probabilities over all periods gives a
 likelihood
 
     L(k) ∝ k^S_obs · e^(−k·E),
@@ -65,7 +67,7 @@ It sharpens as the center sees more spend:
 data. The center uses its rough guess k_guess (`prior_mean`), entered as a Gamma
 prior with shape a₀ (`prior_shape`, 2 by default). In effect the guess counts as
 a₀ units of pseudo-spend. This is the only time the guess matters. A wrong guess
-makes spending uneven during these first d seconds, and nothing worse ([probabilistic.md](../models/probabilistic.md) §3, item 5).
+makes spending uneven during these first d seconds, and nothing worse ([probabilistic.md](models/probabilistic.md) §3, item 5).
 
 **After the first spend is visible, the guess is dropped (`flat_after_data`).**
 The usual Bayesian update would keep the guess forever as α = a₀ + S_obs,
@@ -79,7 +81,7 @@ Poisson rate, so it does not understate how large k could be.
 - **Pacing** uses the mean k̂ = α/β. Its job is to aim the spend at B, and
   aiming deliberately low would only add underspend.
 - **The risk check** uses the *whole* Gamma distribution. Mixing the Poisson
-  in-flight spend over it gives the negative-binomial tail ([probabilistic.md](../models/probabilistic.md) §1, step 3). So
+  in-flight spend over it gives the negative-binomial tail ([probabilistic.md](models/probabilistic.md) §1, step 3). So
   uncertainty about k automatically widens the reserve while data are scarce and
   narrows it as they accumulate. No separate safety margin for k is needed.
 
@@ -89,7 +91,7 @@ with γ < 1. Old data then fade, and the posterior stays wide enough to follow d
 
 ## 2. How the pace is calculated
 
-Pacing answers "how fast *should* we spend?". The risk check ([probabilistic.md](../models/probabilistic.md) §1, step 3) then
+Pacing answers "how fast *should* we spend?". The risk check ([probabilistic.md](models/probabilistic.md) §1, step 3) then
 answers "how fast *may* we spend?", and the controller uses the smaller of the
 two. Code: `_Pacer._pace` in `controllers.py`.
 
@@ -124,7 +126,7 @@ comes out slightly above the even-pace value of 0.01389.
   and so the lowest peak spend in flight. Any uneven plan must run faster than
   B/T at some point.
 - **The one deliberate exception is the end.** The final underspend scales with
-  the spend in flight at the very end ([probabilistic.md](../models/probabilistic.md) §3, item 2). So slowing down in the last
+  the spend in flight at the very end ([probabilistic.md](models/probabilistic.md) §3, item 2). So slowing down in the last
   minutes helps, which is what the optional [end-game](#the-end-game) does. It trades
   a little evenness for less unspent budget.
 - **It allows time to learn k.** Spending gradually gives the center data on k
@@ -145,7 +147,7 @@ from the current state every Δ. That makes errors **self-correcting**:
 **Why the mean k̂ and not a cautious upper bound?** Pacing is for *aiming*. Using
 an upper bound of k would make p systematically too small and the campaign
 would end with budget left unspent. Protection against overspend is not
-pacing's job. The risk check ([probabilistic.md](../models/probabilistic.md) §1, step 3) handles it with the whole distribution of
+pacing's job. The risk check ([probabilistic.md](models/probabilistic.md) §1, step 3) handles it with the whole distribution of
 k, so pacing can aim straight.
 
 **What happens at the edges:**
@@ -183,7 +185,7 @@ spending is running at the end:
 
 In budget units that is c times as much, √(c · money rate · (d + Δ)) under the
 root: the larger each spend, the larger the margin relative to B
-([probabilistic.md](../models/probabilistic.md) §3, item 10).
+([probabilistic.md](models/probabilistic.md) §3, item 10).
 
 With the default numbers and no end-game, the rate at the end is still the even
 pace, B/T ≈ 1.39 units/s. The spend in flight over d + Δ = 35 s is about 49 units,
@@ -197,12 +199,12 @@ the controller can get much closer to B by T.
 
 **Why it does not increase overspend.** In both phases p is the smaller of the
 pace and the risk check, and the risk check still enforces the total ε
-([probabilistic.md](../models/probabilistic.md) §2). The end-game only changes
+([probabilistic.md](models/probabilistic.md) §2). The end-game only changes
 where pacing *aims*.
 
 **What it costs.** Spending runs ahead of the even-pace line before the creep
 phase, so spending is less even. From
-[results/probabilistic.md](../results/probabilistic.md) §5 (ε = 10⁻³, d = 30 s):
+[results/probabilistic.md](results/probabilistic.md) §5 (ε = 10⁻³, d = 30 s):
 
 | endgame | mean underspend | max deviation from even pace |
 |---|---|---|

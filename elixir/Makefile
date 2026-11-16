@@ -1,6 +1,7 @@
 # Builds priv/pacing_math_nif.so for PacingMathNif.
 #   make            build the NIF
-#   make test       run the golden tests for PacingMath and PacingMathNif
+#   make test       golden tests: PacingMath and PacingMathNif against scipy,
+#                   PacingController against traces of the Python controller
 #   make bench      compare pure Elixir and NIF speed
 # In a mix project, hook this Makefile in with the elixir_make compiler.
 
@@ -22,11 +23,14 @@ $(NIF): c_src/pacing_math_nif.c
 	@mkdir -p priv
 	$(CC) $(CFLAGS) -I$(ERTS_INCLUDE_DIR) $(LDFLAGS) -o $@ $< -lm
 
+SRC = -r pacing_math.ex -r pacing_math_nif.ex -r pacing_controller.ex
+
 test: $(NIF)
-	elixir -r pacing_math.ex -r pacing_math_nif.ex pacing_math_test.exs
+	elixir $(SRC) pacing_math_test.exs
+	elixir $(SRC) pacing_controller_test.exs
 
 bench: $(NIF)
-	elixir -r pacing_math.ex -r pacing_math_nif.ex bench.exs
+	elixir $(SRC) bench.exs
 
 clean:
 	rm -rf priv

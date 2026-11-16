@@ -4,9 +4,10 @@ The center's strategy that keeps P(overspend) ≤ ε while spending as much of t
 budget as possible, using only the budget it sees. It builds on
 [system.md](system.md) (configuration, formal model, symbols). How k is
 estimated and how the pace is calculated is explained in
-[IMPLEMENTATION.md](../elixir/IMPLEMENTATION.md) §1–2.
+[IMPLEMENTATION.md](../IMPLEMENTATION.md) §1–2.
 
-Code: `src/pacing/controllers.py` (`BayesRiskController`) · simulation:
+Code: `src/pacing/controllers.py` (`BayesRiskController`), Elixir port
+[`elixir/pacing_controller.ex`](../elixir/pacing_controller.ex) · simulation:
 `src/pacing/model.py` · results: [results/probabilistic.md](../results/probabilistic.md)
 (`uv run python -m pacing.experiments`).
 
@@ -21,12 +22,12 @@ At every control step:
 
 1. **Estimate k.** Use the posterior k ~ Gamma(α, β). Before any spend is visible,
    α and β come from the center's rough guess (`prior_mean`). After that,
-   α = 1 + S_obs and β = E (flat prior). Details: [IMPLEMENTATION.md §1](../elixir/IMPLEMENTATION.md#1-how-k-is-estimated).
+   α = 1 + S_obs and β = E (flat prior). Details: [IMPLEMENTATION.md §1](../IMPLEMENTATION.md#1-how-k-is-estimated).
 2. **Pace.** Spend the expected remaining budget evenly over the remaining planning time:
 
        p_pace = (B − S_obs − k̂·W) / (k̂ · (T − endgame − t)),    clipped to [0, 1]
 
-   Details: [IMPLEMENTATION.md §2](../elixir/IMPLEMENTATION.md#2-how-the-pace-is-calculated).
+   Details: [IMPLEMENTATION.md §2](../IMPLEMENTATION.md#2-how-the-pace-is-calculated).
 
 3. **Check the risk and cap p.** Given k, the committed spend beyond S_obs is
    Poisson(k·(W + pΔ)). Mixed over the Gamma posterior, it is negative-binomial,
@@ -105,7 +106,7 @@ What the results show:
    planned spend a little early and then creeping up to B with a small p halves
    the underspend. A 30–60 s end-game already gets most of the gain for a small
    loss of evenness. How the end-game works and why it helps:
-   [IMPLEMENTATION.md](../elixir/IMPLEMENTATION.md#the-end-game).
+   [IMPLEMENTATION.md](../IMPLEMENTATION.md#the-end-game).
 
    ![End-game time: evenness against underspend](../results/endgame.png)
 
