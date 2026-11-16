@@ -12,6 +12,11 @@ Code: `src/pacing/backstop.py` (`mode="grants"`) · tests: `tests/test_backstop.
 · results: [results/token-cap-b.md](../results/token-cap-b.md)
 (`uv run python -m pacing.backstop`).
 
+**Units.** A realised token costs c budget units ([system.md](system.md) §2).
+All formulas below count in **spends**, not budget units: B stands for B/c, the
+number of spends the budget can pay for (rounded down), and S_obs for the visible
+spend divided by c. With c = 1, the default, the two are the same.
+
 ## 1. Schema
 
 **What flows where.** Compare [token-cap-a.md](token-cap-a.md) §2. There are no arrows from clients back to the
@@ -23,7 +28,7 @@ flowchart LR
     CTR["Center"] ==>|"p (broadcast)<br/>+ G_i tokens, valid for step i only"| CL
     CL -->|"p-coin: yes<br/>and a token left"| BID(("bid<br/>(token used)"))
     CL -.->|"tokens not used<br/>expire at end of step"| EXP["expired<br/>(nobody reports)"]
-    BID -->|"probability r: 1 unit"| BUD[("Budget B")]
+    BID -->|"probability r: c units"| BUD[("Budget B")]
     BID -->|"probability 1 − r"| FAIL["failed<br/>(nobody reports)"]
     BUD -.->|"spend visible after d"| CTR
 ```
@@ -61,7 +66,7 @@ sequenceDiagram
     Note over C: A = B − S_obs − grants of the last d seconds<br/>G = min(⌈s·A⌉, A), recommended s = 0.5
     C->>K: p and G tokens (valid for this step)
     Note over K: bid while the p-coin says yes and tokens remain<br/>further bids are blocked
-    K-->>B: charged bids (1 unit each), visible after d
+    K-->>B: charged bids (c units each), visible after d
     Note over K: at end of step: unused tokens expire
 ```
 

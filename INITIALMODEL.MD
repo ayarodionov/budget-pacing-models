@@ -17,6 +17,7 @@ Is this information is enough for you to create an optimal startegy - spend as m
 
 A. Start with assumption that delay is fixed. Let it be a new parameter in the model
 B. 1 token = 1 budget spend
+   *Revised:* budget spend is proportional to tokens, and the proportion is fixed. Modelled as: a fraction r of tokens is realised, and each realised token costs a fixed c budget units (c = 1 is the original answer).
 C. Yes, immediatly
 D. Let start with steady traffic
 E. Let start with token-to-budget ratio is stable

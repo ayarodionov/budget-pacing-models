@@ -71,7 +71,8 @@ class _Pacer:
         endgame_time: float = 0.0,
         flat_after_data: bool = True,
     ):
-        """prior_mean      the center's guess of k = lambda * r (spend per second at p = 1)
+        """prior_mean      the center's guess of k = lambda * r (realised tokens per second
+                        at p = 1; the spend rate is c * k * p)
         prior_shape     confidence in that guess, in "pseudo-observed spends"
         endgame_time    plan to finish the expected spend this many seconds before T and
                         use the rest of the time to creep up to the budget safely
@@ -86,6 +87,15 @@ class _Pacer:
         self.b0 = float(prior_shape) / float(prior_mean)
         self.endgame_time = float(endgame_time)
         self.flat_after_data = flat_after_data
+        self.c = float(view.unit_cost)
+
+    def _events(self, observed_spend):
+        """Visible spend in budget units -> (realised tokens seen, budget left in tokens).
+
+        All statistics work in realised tokens: the spend is c times a Poisson count.
+        """
+        n = np.rint(np.asarray(observed_spend, float) / self.c)
+        return n, self.view.budget_events - n
 
     def reset(self, n_runs: int) -> None:
         pass
@@ -119,8 +129,8 @@ def _bisect_p(p_hi, ok_fn, iters: int = 30):
 # --------------------------------------------------------------------------- strategies
 class NaiveController(_Pacer):
     def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
+        observed_spend, remaining = self._events(observed_spend)
         _, _, k_est = self._posterior(observed_spend, observed_exposure)
-        remaining = self.view.budget - observed_spend
         return np.where(remaining > 0, self._pace(t, remaining, k_est), 0.0)
 
 
@@ -130,8 +140,8 @@ class PluginController(_Pacer):
         self.eps = eps
 
     def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
+        observed_spend, remaining = self._events(observed_spend)
         _, _, k_est = self._posterior(observed_spend, observed_exposure)
-        remaining = self.view.budget - observed_spend
         p = self._pace(t, remaining - k_est * inflight_exposure, k_est)
         dt = self.view.step
 
@@ -208,10 +218,10 @@ class BayesRiskController(_Pacer):
         return gamma_poisson_tail(remaining, alpha, beta, exposure, self.tails)
 
     def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
+        observed_spend, remaining = self._events(observed_spend)
         alpha, beta, k_est = self._posterior(observed_spend, observed_exposure)
         if self.known_rate is not None:
             k_est = np.full_like(k_est, self.known_rate)
-        remaining = self.view.budget - observed_spend
         dt = self.view.step
         w = inflight_exposure
 

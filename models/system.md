@@ -46,10 +46,12 @@ The system has three kinds of participants.
 2. The request reaches one client, chosen at random.
 3. The client creates a token with probability p (it bids), or drops the request.
 4. The token turns into real spend with probability r. Otherwise it costs
-   nothing, for example because the bid lost or was never charged. Realised spend
-   is always exactly **1 budget unit**. The center does not know r, but r is stable.
-5. The 1 unit is taken from the budget at time s, but the center sees it only at
-   time s + d. The delay d is fixed and known.
+   nothing, for example because the bid lost or was never charged. A realised
+   token always costs the same fixed amount, **c budget units**, so spend is
+   proportional to the number of realised tokens. The center does not know r,
+   but r is stable.
+5. The c units are taken from the budget at time s, but the center sees them only
+   at time s + d. The delay d is fixed and known.
 
 ```mermaid
 flowchart LR
@@ -57,7 +59,7 @@ flowchart LR
     SRC --> C2["Client 2"]
     SRC --> CN["Client N"]
     C1 & C2 & CN -->|"token with<br/>probability p"| TOK(("tokens"))
-    TOK -->|"realised with probability r<br/>1 unit each"| BUD[("Budget B")]
+    TOK -->|"realised with probability r<br/>c units each"| BUD[("Budget B")]
     BUD -.->|"visible after delay d"| CTR["Center"]
     CTR ==>|"broadcast p<br/>(takes effect immediately)"| C1 & C2 & CN
 ```
@@ -68,7 +70,7 @@ The center acts every Δ seconds. This is the **control period**, the `step`
 parameter, 5 s by default:
 
 1. Read the visible budget. It shows all spend up to time t − d.
-2. Update the estimate of how much one unit of p spends per second (k = λ·r, §2).
+2. Update the estimate of how many spends per second p = 1 would produce (k = λ·r, §2).
 3. Choose a new p. Pacing says how fast to spend. The risk check says how much
    spend can be in flight without risking overspend
    ([probabilistic.md](probabilistic.md) §1).
@@ -97,10 +99,12 @@ early enough that the in-flight spend still fits in the budget.
 
 ### Example with the default numbers
 
-λ = 1000 requests/s and r = 0.1, so k = λ·r = 100 units/s at p = 1. To spend
-B = 5000 units in T = 1 h, the target rate is about 1.39 units/s, which needs
-p ≈ 0.014. At that rate about 14 of the 1000 requests per second become tokens,
-and about 1.4 of those become spend. With d = 30 s, about 42 units are in flight
+λ = 1000 requests/s, r = 0.1 and c = 1, so k = λ·r = 100 spends/s, or
+c·k = 100 units/s, at p = 1. To spend B = 5000 units in T = 1 h, the target
+rate is about 1.39 units/s, which needs p ≈ 0.014. At that rate about 14 of the
+1000 requests per second become tokens, and about 1.4 of those become spend. With
+c = 10 the same budget is 500 spends of 10 units; p is then 10 times smaller,
+≈ 0.0014. With d = 30 s, about 42 units are in flight
 at any moment. Near the end of the hour, those 42 units are what can push the
 total over B.
 
@@ -108,7 +112,8 @@ total over B.
 
 | Symbol | Meaning | Known to center? |
 |---|---|---|
-| B | budget, in units (one realised token costs exactly 1 unit) | yes |
+| B | budget, in budget units | yes |
+| c | cost of one realised token, in budget units (fixed; spend = c × realised tokens) | yes: every spend appears as a budget decrement of exactly c |
 | T | horizon (time to spend the budget) | yes |
 | d | fixed delay between a spend and its appearance in the budget | yes |
 | Δ | control period (how often the center may broadcast a new p) | yes |
@@ -116,25 +121,39 @@ total over B.
 | λ | rate of bid requests (steady Poisson) | **no** |
 | r | probability that a token turns into budget spend (stable) | **no** |
 | N | number of clients | **no** |
-| k | k = λ·r, budget spend per second at p = 1; actual spend rate is k·p (the only unknown the center needs; see [IMPLEMENTATION.md §1](../IMPLEMENTATION.md#1-how-k-is-estimated)) | **no**, but estimated from the budget |
+| k | k = λ·r, realised tokens (spends) per second at p = 1; actual spend rate is c·k·p units/s (the only unknown the center needs; see [IMPLEMENTATION.md §1](../IMPLEMENTATION.md#1-how-k-is-estimated)) | **no**, but estimated from the budget |
 | p | token probability broadcast to all clients; takes effect immediately | it sets it |
 
 A request goes to a uniformly random client. That client creates a token with
-probability p, and the token becomes 1 unit of spend with probability r.
+probability p, and the token becomes c units of spend with probability r.
 
-**Interpretation of answer B.** Point 8 says "not every token realises in budget
-spending". I read "1 token = 1 budget spend" as: a token that *is* realised costs
-exactly 1 unit, and a fraction r of tokens is realised. If every token is realised,
-set r = 1. Nothing else changes.
+**Interpretation of answer B (revised).** Point 8 says "not every token realises
+in budget spending" and "budget spend is proportional to the number of spent
+tokens". The revised answer B fixes that proportion. I model it as two parts: a
+fraction r of tokens is realised, and each realised token costs the same c units.
+On average a token costs r·c. If every token is realised, set r = 1; the original
+answer "1 token = 1 budget spend" is c = 1.
 
-**Reduction.** Thinning a Poisson process keeps it Poisson. So the spend in an
-interval of length Δ with constant p is
+**Why c is treated as known.** A realised token always costs exactly c, so every
+spend appears in the budget as a decrement of c. The first visible spend reveals
+c (or it is simply the price in the contract). The unknown part of the proportion
+is r, and it is learned together with λ as k = λ·r.
 
-    X ~ Poisson(k · p · Δ),     k = λ · r   (spend per second at p = 1)
+**Reduction.** Thinning a Poisson process keeps it Poisson. So the number of
+realised tokens in an interval of length Δ with constant p is
 
-whatever N is and however requests are split between clients. The center does not
-need N, λ or r separately, only the single number k, and it can learn k from its
-own budget. `test_number_of_clients_does_not_matter` checks this against an
+    X ~ Poisson(k · p · Δ),     k = λ · r   (spends per second at p = 1)
+
+and the spend is c·X units, whatever N is and however requests are split between
+clients. The center does not need N, λ or r separately, only the single number k,
+and it can learn k from its own budget.
+
+**Counting in spends.** Since spend = c·X, it is enough to count in spends:
+the budget holds B/c of them, and overspend means more than B/c spends in total.
+All the statistics below (the estimate of k, the risk check) work on these counts;
+c only converts to and from budget units. The size of c matters through B/c: the
+fewer and larger the spends, the noisier the spend relative to B, and the larger
+the reserve the center must keep ([probabilistic.md](probabilistic.md) §3). `test_number_of_clients_does_not_matter` checks this against an
 event-level simulation with 1, 7 and 500 clients.
 
 **What the center sees.** At time t it sees spend S_obs from the period before
@@ -203,12 +222,12 @@ channel from p, and it can provide a guarantee that p alone cannot.
 - **Leases.** Clients ask the center for a lease of L tokens when their wallet
   runs low. As a side effect, the center now learns who the clients are, so N
   becomes observable. Unused tokens are returned when the lease expires.
-- **Outcomes.** A used token either turns into spend (1 unit, visible after d) or
+- **Outcomes.** A used token either turns into spend (c units, visible after d) or
   fails (the bid lost or was not charged). The client reports the failure back
   after a delay d_f.
-- **Center's rule:** visible spend + tokens outstanding ≤ B, where "outstanding"
-  means leased tokens whose outcome is not yet known. No token can cost more than
-  1 unit, so **overspend is impossible**. This is a guarantee with certainty, not
+- **Center's rule:** visible spend + c × tokens outstanding ≤ B, where
+  "outstanding" means leased tokens whose outcome is not yet known. No token can
+  cost more than c units, so **overspend is impossible**. This is a guarantee with certainty, not
   "probability ≤ ε". It holds even if a stop message is lost, a client stops
   responding, or the delay is longer than expected, which are exactly the failures
   that the probabilistic controller has to assume away.
@@ -238,8 +257,9 @@ budget held by tokens whose outcome is not yet known, roughly
 3 % when 90 % of bids fail and a failure becomes known only after 30 s.
 
 **Other models where tokens would help:**
-- **Different bid prices.** A bid costs c units instead of 1. Tokens become the
-  unit of money, and a bid uses c tokens.
+- **Different bid prices.** Here every realised token costs the same c. If
+  prices vary from bid to bid, tokens can become the unit of money, and a bid uses
+  as many tokens as its price.
 - **Several campaigns or client groups with their own budgets.** A broadcast p
   is the same for everyone, while token allocations can differ per client.
 - **Unreliable messages to clients.** If p cannot be changed immediately (your

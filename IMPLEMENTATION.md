@@ -9,13 +9,21 @@ computes its two inputs and how to implement the math in Elixir:
 2. [How the pace is calculated](#2-how-the-pace-is-calculated), including [the end-game](#the-end-game)
 3. [Implementation without a numerics library (Elixir)](#3-implementation-without-a-numerics-library-elixir)
 
+**Units.** A realised token costs a fixed c budget units
+([system.md](models/system.md) §2). The controller works in **spends** (realised
+tokens): it divides the visible spend and the budget by c on input, and nothing
+else changes. In this file B, S_obs and "units" mean spends; with c = 1, the
+default, they are also budget units. Code: `_Pacer._events` in `controllers.py`.
+
 ## 1. How k is estimated
 
-k is the spend per second the system would produce at p = 1. The center never
+k is the number of spends per second the system would produce at p = 1; the
+spend rate in budget units is c·k·p. The center never
 measures it directly. It has only two numbers, and both are enough
 (code: `_Pacer._posterior` in `controllers.py`):
 
-- **S_obs**, the spend visible in the budget, which covers everything up to t − d;
+- **S_obs**, the spend visible in the budget (counted in spends, i.e. divided by
+  c), which covers everything up to t − d;
 - **E = ∫ p ds over the same period, up to t − d**. The center knows E exactly,
   because it set p itself. E is the number of "seconds at full throttle" that
   produced S_obs.
@@ -171,7 +179,11 @@ the center must always keep a margin for spend in flight that it cannot see yet.
 At the deadline that margin is what stays unspent. Its size is set by how fast
 spending is running at the end:
 
-    margin ≈ z(1 − ε) · √(rate · (d + Δ))
+    margin ≈ z(1 − ε) · √(rate · (d + Δ))      spends, rate in spends/s
+
+In budget units that is c times as much, √(c · money rate · (d + Δ)) under the
+root: the larger each spend, the larger the margin relative to B
+([probabilistic.md](models/probabilistic.md) §3, item 10).
 
 With the default numbers and no end-game, the rate at the end is still the even
 pace, B/T ≈ 1.39 units/s. The spend in flight over d + Δ = 35 s is about 49 units,

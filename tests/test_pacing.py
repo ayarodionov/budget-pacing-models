@@ -207,3 +207,30 @@ def test_eta_is_a_rate_per_time_not_per_step():
         c = BayesRiskController(sc.center_view(), prior_mean=1.0, eps=0.01, eta=0.5, eta_period=5.0)
         # share of unused risk still unused after 5 s is 1 - eta, whatever the step
         assert (1 - c.eta_step) ** (5.0 / step) == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------- unit cost c
+@pytest.mark.parametrize("c", [0.5, 2.5, 7.0])
+def test_unit_cost_only_rescales_budget_units(c):
+    """Spend = c x realised tokens: scaling B by c gives the same runs, in units of c."""
+    scaled = Scenario(**{**SMALL.__dict__, "budget": SMALL.budget * c, "unit_cost": c})
+    for make in (
+        lambda s: BayesRiskController(s.center_view(), prior_mean=10.0, eps=0.01),
+        lambda s: NaiveController(s.center_view(), prior_mean=10.0),
+    ):
+        a = simulate(SMALL, make(SMALL), 500, seed=3)
+        b = simulate(scaled, make(scaled), 500, seed=3)
+        np.testing.assert_allclose(b.final_spend, c * a.final_spend)
+        np.testing.assert_array_equal(b.overspent, a.overspent)
+
+
+def test_coarser_spend_needs_a_larger_reserve():
+    """Same budget in money, larger c: fewer, bigger spends, so more relative noise."""
+    under = {}
+    for c in (1.0, 10.0):
+        scn = Scenario(**{**SMALL.__dict__, "budget": 3000, "unit_cost": c})
+        res = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=10.0, eps=1e-3),
+                       2000, seed=4)
+        assert res.overspent.mean() < 0.01
+        under[c] = res.summary(scn.budget)["mean_underspend_pct"]
+    assert under[10.0] > 2 * under[1.0]

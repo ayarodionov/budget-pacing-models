@@ -12,6 +12,11 @@ Code: `src/pacing/controllers.py` (`BayesRiskController`) · simulation:
 
 ## 1. Strategy (`BayesRiskController`)
 
+**Counting in spends.** A realised token costs c budget units
+([system.md](system.md) §2), so the controller counts spends: the budget holds
+B/c of them, and S_obs/c of them are visible. In the formulas below, B and S_obs
+are these counts. With c = 1, the default, they are the budget units.
+
 At every control step:
 
 1. **Estimate k.** Use the posterior k ~ Gamma(α, β). Before any spend is visible,
@@ -130,6 +135,26 @@ What the results show:
    ε is cheap: 0.67 % underspend at ε = 10⁻⁹ and 0.78 % at ε = 10⁻¹². For
    certainty, see the token caps ([token-cap-a.md](token-cap-a.md),
    [token-cap-b.md](token-cap-b.md)).
+10. **Underspend grows like √c, the cost of one spend.** With B = 5000 units
+    fixed, a realised token costing c units means B/c spends. The fewer and
+    larger the spends, the noisier the spend relative to B, and the larger the
+    reserve for in-flight spend: about z·√(c·(B/T)·(d + Δ)) units. The request
+    rate is scaled as λ = 1000/c, so the needed p stays ≈ 0.014. With λ fixed, any
+    c below 0.014 could not spend B even at p = 1.
+
+    | c (units per spend) | 0.01 | 0.05 | 0.1 | 0.5 | 1 | 5 | 10 | 25 |
+    |---|---|---|---|---|---|---|---|---|
+    | spends in the budget, B/c | 500 000 | 100 000 | 50 000 | 10 000 | 5000 | 1000 | 500 | 200 |
+    | mean underspend | 0.045 % | 0.10 % | 0.14 % | 0.29 % | 0.40 % | 0.86 % | 1.30 % | 2.36 % |
+
+    So what matters is the number of spends in the budget, not its size in
+    money. Small spends make the delay almost free: at c = 0.01 only 0.045 % of
+    the budget is left. The overspend rate stays at or below about ε for every c
+    (0.35–1.3·10⁻³ at ε = 10⁻³ in 40 000 runs; the highest, at c = 25 with only
+    200 spends, is about two standard errors above ε). The controller itself does
+    not change: it divides the budget and the visible spend by c and counts spends.
+
+    ![Underspend against the cost per realised token c](../results/cost.png)
 
 ## 4. Limits
 

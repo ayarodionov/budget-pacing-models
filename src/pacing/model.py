@@ -8,15 +8,18 @@ Model (see models/system.md for the full statement)
 * A client that receives a request generates (spends) a token with probability
   ``p``. ``p`` is broadcast by the center and is the same for every client.
 * A token turns into budget spend with probability ``realization`` (r); a realised
-  token costs exactly 1 budget unit.
+  token costs a fixed ``unit_cost`` (c) budget units, so spend is proportional to
+  the number of realised tokens. c is known to the center: every visible spend is
+  a budget decrement of exactly c, so the first one reveals it.
 * A spend becomes visible to the center ``delay`` (d) seconds after it happens.
   A change of ``p`` takes effect immediately.
 * The center knows the budget B, the horizon T, the delay d and its own history of
   ``p``. It does NOT know lambda, r or N.
 
 By Poisson thinning the budget spend in an interval of length dt with constant
-``p`` is Poisson(lambda * r * p * dt), independently of N and of how requests are
-split between clients. The aggregate simulator uses this; the client-level
+``p`` is c * Poisson(lambda * r * p * dt), independently of N and of how requests
+are split between clients. Internally everything is counted in realised tokens
+("spend events"); budget and spend are reported in budget units (c per event). The aggregate simulator uses this; the client-level
 simulator exists to check it (see tests).
 """
 
@@ -31,16 +34,20 @@ import numpy as np
 
 @dataclass(frozen=True)
 class Scenario:
-    budget: int = 5_000  # B, budget units (1 realised token = 1 unit)
+    budget: float = 5_000  # B, budget units
     horizon: float = 3_600.0  # T, seconds
     request_rate: float = 1_000.0  # lambda, bid requests / s  (unknown to center)
     realization: float = 0.1  # r, P(token -> budget spend) (unknown to center)
     delay: float = 30.0  # d, seconds until a spend is visible in the budget
     step: float = 5.0  # control period: the center may change p every `step` s
+    unit_cost: float = 1.0  # c, budget units per realised token (known to center)
 
     @property
     def spend_rate_at_p1(self) -> float:
-        """k = lambda * r: budget units per second when p = 1 (unknown to center)."""
+        """k = lambda * r: realised tokens (spend events) per second at p = 1.
+
+        The spend rate in budget units is c * k * p. k is unknown to the center.
+        """
         return self.request_rate * self.realization
 
     @property
@@ -56,17 +63,28 @@ class Scenario:
         return math.ceil(self.delay / self.step - 1e-9)
 
     def center_view(self) -> "CenterView":
-        return CenterView(self.budget, self.horizon, self.delay, self.step)
+        return CenterView(self.budget, self.horizon, self.delay, self.step, self.unit_cost)
+
+    @property
+    def budget_events(self) -> float:
+        """B / c: the budget counted in realised tokens."""
+        return self.budget / self.unit_cost
 
 
 @dataclass(frozen=True)
 class CenterView:
     """The part of the scenario the center is allowed to know."""
 
-    budget: int
+    budget: float
     horizon: float
     delay: float
     step: float
+    unit_cost: float = 1.0
+
+    @property
+    def budget_events(self) -> float:
+        """B / c: the budget counted in realised tokens."""
+        return self.budget / self.unit_cost
 
 
 class Controller(Protocol):
@@ -81,7 +99,7 @@ class Controller(Protocol):
     ) -> np.ndarray:
         """Return p for the next control period, one value per run.
 
-        observed_spend     spend already visible in the budget
+        observed_spend     spend already visible in the budget, in budget units
         observed_exposure  integral of p over the period whose spend is visible
         inflight_exposure  integral of p over the period whose spend is not visible yet
         """
@@ -90,7 +108,7 @@ class Controller(Protocol):
 
 @dataclass
 class SimResult:
-    final_spend: np.ndarray  # total spend once everything in flight has landed
+    final_spend: np.ndarray  # total spend (budget units) once everything in flight has landed
     overspent: np.ndarray  # final_spend > budget
     max_pace_deviation: np.ndarray  # max_t |S(t)/B - t/T|, how uneven spending was
     traj_time: np.ndarray = field(default_factory=lambda: np.empty(0))
@@ -155,10 +173,11 @@ def simulate(
     traj_spend = np.zeros((keep, n_steps + 1))
     traj_p = np.zeros((keep, n_steps))
 
+    c = scn.unit_cost
     controller.reset(n_runs)
     for i in range(n_steps):
         p = np.clip(
-            controller.decide(i * dt, obs_spend, obs_exposure, inflight), 0.0, 1.0
+            controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0
         )
         x = rng.poisson(k * p * dt)
         true_spend += x
@@ -175,15 +194,15 @@ def simulate(
             inflight -= ring_p[:, sj] * dt
             np.maximum(inflight, 0.0, out=inflight)
 
-        dev = np.abs(true_spend / scn.budget - (i + 1) / n_steps)
+        dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)
         np.maximum(max_dev, dev, out=max_dev)
         if keep:
-            traj_spend[:, i + 1] = true_spend[:keep]
+            traj_spend[:, i + 1] = c * true_spend[:keep]
             traj_p[:, i] = p[:keep]
 
     return SimResult(
-        final_spend=true_spend,
-        overspent=true_spend > scn.budget,
+        final_spend=c * true_spend,
+        overspent=true_spend > scn.budget_events + 1e-9,
         max_pace_deviation=max_dev,
         traj_time=np.arange(n_steps + 1) * dt,
         traj_spend=traj_spend,
@@ -196,8 +215,9 @@ def simulate_clients_once(
 ) -> tuple[int, np.ndarray]:
     """Event-level simulation of the original client story for a fixed p.
 
-    Returns (budget spend, tokens per client). Used to check that the aggregate
-    model (Poisson(lambda*r*p*duration)) does not depend on the number of clients.
+    Returns (realised tokens, tokens per client); the budget spend is c times the
+    first. Used to check that the aggregate model (Poisson(lambda*r*p*duration))
+    does not depend on the number of clients.
     """
     n_requests = rng.poisson(scn.request_rate * duration)
     client_of_request = rng.integers(0, n_clients, size=n_requests)

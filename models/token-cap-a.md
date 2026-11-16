@@ -12,13 +12,18 @@ Code: `src/pacing/backstop.py` (`mode="reports"`) · tests: `tests/test_backstop
 · results: [results/token-cap-a.md](../results/token-cap-a.md),
 `results/token-cap-a.png` (`uv run python -m pacing.backstop`).
 
+**Units.** A realised token costs c budget units ([system.md](system.md) §2).
+All formulas below count in **spends**, not budget units: B stands for B/c, the
+number of spends the budget can pay for (rounded down), and S_obs for the visible
+spend divided by c. With c = 1, the default, the two are the same.
+
 ## 1. Idea
 
 The controller has to *guess* how much spend is in flight, because the budget
 shows spend only d seconds after it happens. The cap removes the guess. Every
 bid needs a **token**, and the center counts tokens **when it grants them**. The
 center then always knows an upper bound on everything that can still be
-charged: each granted token costs at most 1 unit. If granted tokens never exceed
+charged: each granted token costs at most c units. If granted tokens never exceed
 what the budget can pay for, overspend cannot happen, whatever the traffic, the
 delay, the controller or a lost message does.
 
@@ -56,7 +61,7 @@ Life of a bid with the cap:
 3. On "yes" the client needs a token. If none is left, the bid is **blocked**,
    and the client counts it.
 4. With a token, the client bids and the token is used up.
-5. With probability r the bid is charged 1 unit, which appears in the budget
+5. With probability r the bid is charged c units, which appear in the budget
    after d. Otherwise it fails, and the client reports the failure to the center
    after d_f.
 
@@ -64,7 +69,7 @@ Life of a bid with the cap:
 flowchart LR
     SRC["Bid request source"] --> CL["Client"]
     CL -->|"p-coin: yes<br/>and holds a token"| BID(("bid<br/>(token used)"))
-    BID -->|"probability r: 1 unit"| BUD[("Budget B")]
+    BID -->|"probability r: c units"| BUD[("Budget B")]
     BID -->|"probability 1 − r: failed"| FAIL["failure report"]
     BUD -.->|"after d"| CTR["Center"]
     FAIL -.->|"after d_f"| CTR
@@ -86,10 +91,10 @@ At the start of every control step it sets the allowance for that step:
 Clients together may use at most A tokens during the step. In the simulation the
 allowance is one shared pool; §6 covers real wallets.
 
-**Proof.** Every unit of spend comes from a used token that did not fail. Let
-F_total be all failures, reported or not. Then
+**Proof.** Every spend comes from a used token that did not fail. Let F_total be
+all failures, reported or not. Counting in spends,
 
-    spend = U − F_total ≤ U − F_obs ≤ B,
+    spends = U − F_total ≤ U − F_obs ≤ B,
 
 because F_obs ≤ F_total, and the allowance rule keeps U ≤ B + F_obs at all
 times. ∎
@@ -101,7 +106,7 @@ always bids at p = 1 (`test_cap_makes_overspend_impossible_even_at_full_throttle
 
 What it does need:
 - clients cannot bid without a token, which is an enforcement point on the client;
-- a token's bid costs at most 1 unit;
+- a token's bid costs at most c units (with varying prices, c is the highest one);
 - failure reports are never false. A late report is safe: it only holds budget
   longer.
 

@@ -3,15 +3,15 @@
 Models: models/token-cap-a.md (version a), models/token-cap-b.md (version b)
 -----------------------------------------------------------------------------
 * A client may bid only while it holds a token. Each bid uses one token.
-* A used token is realised (1 unit of spend, visible after d) with probability r,
+* A used token is realised (c units of spend, visible after d) with probability r,
   otherwise it fails. Failures are reported to the center after ``failure_delay``
   (d_f). A token that has not failed yet may still be realised.
 * At the start of each control step the center grants an allowance
 
-      A = B + F_obs - U        (U = tokens used so far, F_obs = failures reported)
+      A = B/c + F_obs - U      (U = tokens used so far, F_obs = failures reported)
 
   and clients may use at most A tokens during the step; further bids are
-  blocked. Hence realised spend <= U - F_total <= U - F_obs <= B at all times:
+  blocked. Hence realised spend <= c (U - F_total) <= c (U - F_obs) <= B at all times:
   **overspend is impossible**, whatever the traffic, the delay or the controller.
 * Clients also report how many bids were blocked, so the center knows the
   effective exposure p * (used / wanted) * step and its estimate of k stays unbiased.
@@ -56,10 +56,10 @@ def simulate_with_backstop(
     """Token-level simulation. ``cap=False`` gives the same process without the backstop.
 
     mode = "reports"  version (a): clients report failures (after ``failure_delay``),
-                      tokens used and bids blocked. Allowance A = B + F_obs - U.
+                      tokens used and bids blocked. Allowance A = B/c + F_obs - U.
     mode = "grants"   version (b): no reports. Each step the center grants G tokens
                       that expire at the end of the step, with
-                      G <= A = B - S_obs - (tokens granted in the last d seconds).
+                      G <= A = (B - S_obs)/c - (tokens granted in the last d seconds).
                       Grant rule: ``grant_share`` s gives G = ceil(s * A) (needs no
                       information); ``grant_headroom`` h gives G = min(A, ceil(h * lambda
                       * p * step)), i.e. it assumes the center knows the bid demand
@@ -73,17 +73,18 @@ def simulate_with_backstop(
     rng = np.random.default_rng(seed)
     n_steps, d_steps, dt = scn.n_steps, scn.delay_steps, scn.step
     f_steps = math.ceil(failure_delay / dt - 1e-9)
-    lam, r, budget = scn.request_rate, scn.realization, scn.budget
+    lam, r, c = scn.request_rate, scn.realization, scn.unit_cost
+    budget = math.floor(scn.budget_events + 1e-9)  # B/c: whole tokens the budget can pay for
 
     ring = d_steps + 1
     ring_p = np.zeros((n_runs, ring))  # effective p per step (after blocking)
-    ring_x = np.zeros((n_runs, ring), dtype=np.int64)  # realised spend per step
+    ring_x = np.zeros((n_runs, ring), dtype=np.int64)  # realised tokens per step
     fring = f_steps + 1
     ring_f = np.zeros((n_runs, fring), dtype=np.int64)  # failures per step
     ring_g = np.zeros((n_runs, ring), dtype=np.int64)  # (b): tokens granted per step
     granted_unresolved = np.zeros(n_runs, dtype=np.int64)  # (b): granted in the last d s
 
-    obs_spend = np.zeros(n_runs, dtype=np.int64)
+    obs_spend = np.zeros(n_runs, dtype=np.int64)  # visible realised tokens (spend / c)
     obs_exposure = np.zeros(n_runs)
     inflight = np.zeros(n_runs)
     used = np.zeros(n_runs, dtype=np.int64)  # U
@@ -94,7 +95,7 @@ def simulate_with_backstop(
 
     controller.reset(n_runs)
     for i in range(n_steps):
-        p = np.clip(controller.decide(i * dt, obs_spend, obs_exposure, inflight), 0.0, 1.0)
+        p = np.clip(controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0)
         wanted = rng.poisson(lam * p * dt)  # bids the clients would make
         grant = None
         if not cap:
@@ -141,12 +142,12 @@ def simulate_with_backstop(
         if jf >= 0:
             fail_obs += ring_f[:, jf % fring]
 
-        dev = np.abs(true_spend / budget - (i + 1) / n_steps)
+        dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)
         np.maximum(max_dev, dev, out=max_dev)
 
     return BackstopResult(
-        final_spend=true_spend,
-        overspent=true_spend > budget,
+        final_spend=c * true_spend,
+        overspent=true_spend > scn.budget_events + 1e-9,
         max_pace_deviation=max_dev,
         blocked_bids=blocked,
         cap_bound=blocked > 0,

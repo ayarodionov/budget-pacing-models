@@ -84,3 +84,12 @@ def test_grants_only_spends_nearly_all_when_every_bid_is_charged():
     res = simulate_with_backstop(scn, c, 1000, seed=12, mode="grants", grant_share=0.5)
     assert not res.overspent.any()
     assert res.final_spend.mean() > 0.97 * scn.budget
+
+
+@pytest.mark.parametrize("mode", ["reports", "grants"])
+@pytest.mark.parametrize("c", [0.7, 3.0])
+def test_cap_with_unit_cost_never_overspends(mode, c):
+    scn = replace(SMALL, budget=301.0, unit_cost=c, request_rate=20.0, realization=0.5)
+    kw = {"grant_share": 0.5} if mode == "grants" else {}
+    res = simulate_with_backstop(scn, _FullThrottle(), 1000, 5.0, seed=2, mode=mode, **kw)
+    assert res.final_spend.max() <= scn.budget + 1e-9
