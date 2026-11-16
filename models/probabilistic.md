@@ -99,7 +99,8 @@ What the results show:
 4. **Evenness versus budget use is a policy choice (point 5).** Finishing the
    planned spend a little early and then creeping up to B with a small p halves
    the underspend. A 30–60 s end-game already gets most of the gain for a small
-   loss of evenness.
+   loss of evenness. How the end-game works and why it helps:
+   [IMPLEMENTATION.md](../IMPLEMENTATION.md#the-end-game).
 
    ![End-game time: evenness against underspend](../results/endgame.png)
 

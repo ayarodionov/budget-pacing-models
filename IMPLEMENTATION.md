@@ -6,7 +6,7 @@ controller and its overspend guarantee. The shared system and formal model are i
 computes its two inputs and how to implement the math in Elixir:
 
 1. [How k is estimated](#1-how-k-is-estimated)
-2. [How the pace is calculated](#2-how-the-pace-is-calculated)
+2. [How the pace is calculated](#2-how-the-pace-is-calculated), including [the end-game](#the-end-game)
 3. [Implementation without a numerics library (Elixir)](#3-implementation-without-a-numerics-library-elixir)
 
 ## 1. How k is estimated
@@ -94,7 +94,7 @@ two. Code: `_Pacer._pace` in `controllers.py`.
 | B − S_obs | budget not yet *visibly* spent |
 | − k̂·W | minus the spend expected to be in flight (W = exposure of the last d seconds). That money is already committed and will appear in the budget. Without this term the center would plan to spend it twice. |
 | = to_spend | what is still free to plan |
-| plan_left | seconds left in which to spend it: until T, or until T − endgame if an end-game is used ([probabilistic.md](models/probabilistic.md) §3, item 4) |
+| plan_left | seconds left in which to spend it: until T, or until T − endgame if an end-game is used ([below](#the-end-game)) |
 | to_spend / plan_left | the **target spend rate** in units/s, i.e. spread what is left evenly over the time that is left |
 | ÷ k̂ | converts a spend rate into p, because spend rate = k·p |
 | clip to [0, 1] | p is a probability |
@@ -117,7 +117,7 @@ comes out slightly above the even-pace value of 0.01389.
   B/T at some point.
 - **The one deliberate exception is the end.** The final underspend scales with
   the spend in flight at the very end ([probabilistic.md](models/probabilistic.md) §3, item 2). So slowing down in the last
-  minutes helps, which is what the optional end-game does ([probabilistic.md](models/probabilistic.md) §3, item 4). It trades
+  minutes helps, which is what the optional [end-game](#the-end-game) does. It trades
   a little evenness for less unspent budget.
 - **It allows time to learn k.** Spending gradually gives the center data on k
   before much budget is committed.
@@ -151,6 +151,63 @@ k, so pacing can aim straight.
   step, and the **risk check alone** sets p. This is the creep phase: p shrinks
   as the remaining budget gets close to the in-flight spend. Without an end-game
   the same thing happens in the last few steps before T.
+
+### The end-game
+
+The end-game is an optional parameter, `endgame` seconds (`endgame_time` in
+`_Pacer`; 0 means off). Pacing then aims to have spent the budget `endgame`
+seconds **before** T instead of exactly at T. The rest of the time is left to the
+risk check, which approaches B in small steps.
+
+**The two phases:**
+
+| Phase | Time | What sets p |
+|---|---|---|
+| Pacing | t < T − endgame | p_pace, with plan_left = T − endgame − t: the controller runs slightly faster than the even pace B/T |
+| Creep | t ≥ T − endgame | plan_left = Δ, so pacing asks for "everything now" and the **risk check alone** sets p. p shrinks step by step as the remaining budget approaches the spend still in flight. |
+
+**Why it reduces underspend.** The budget shows spend only after the delay d, so
+the center must always keep a margin for spend in flight that it cannot see yet.
+At the deadline that margin is what stays unspent. Its size is set by how fast
+spending is running at the end:
+
+    margin ≈ z(1 − ε) · √(rate · (d + Δ))
+
+With the default numbers and no end-game, the rate at the end is still the even
+pace, B/T ≈ 1.39 units/s. The spend in flight over d + Δ = 35 s is about 49 units,
+and the margin is about 3.1 × √49 ≈ 21 units, or 0.4 % of B. That is the
+underspend measured in the results.
+
+With an end-game, most of the budget is already spent when the creep phase
+starts. The remaining budget is small, so the risk check keeps p, and therefore
+the rate, low. A low rate means little spend in flight, so a small margin, and
+the controller can get much closer to B by T.
+
+**Why it does not increase overspend.** In both phases p is the smaller of the
+pace and the risk check, and the risk check still enforces the total ε
+([probabilistic.md](models/probabilistic.md) §2). The end-game only changes
+where pacing *aims*.
+
+**What it costs.** Spending runs ahead of the even-pace line before the creep
+phase, so spending is less even. From
+[results/probabilistic.md](results/probabilistic.md) §5 (ε = 10⁻³, d = 30 s):
+
+| endgame | mean underspend | max deviation from even pace |
+|---|---|---|
+| 0 s | 0.40 % | 1.2 % |
+| 30 s | 0.28 % | 1.5 % |
+| 60 s | 0.24 % | 2.1 % |
+| 300 s | 0.19 % | 8.4 % |
+| 600 s | 0.17 % | 16.6 % |
+
+**Choosing it.** An end-game of about d to 2d (30–60 s here) gets most of the
+gain for little loss of evenness. Longer ones buy little more underspend and
+make spending visibly uneven. The choice is a policy decision between even
+spending and full use of the budget (problem point 5).
+
+**In code** it is one number, used in the single line that computes plan_left:
+
+    plan_left = max(T - endgame - t, step)
 
 ## 3. Implementation without a numerics library (Elixir)
 
