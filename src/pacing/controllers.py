@@ -104,7 +104,9 @@ class _Pacer:
         alpha = self.a0 + observed_spend
         beta = self.b0 + observed_exposure
         if self.flat_after_data:
-            seen = observed_spend > 0
+            # with a message delay, spend can show up before its exposure is counted
+            # (E = 0); keep the prior until there is exposure to divide by
+            seen = (observed_spend > 0) & (observed_exposure > 0)
             alpha = np.where(seen, 1.0 + observed_spend, alpha)
             beta = np.where(seen, observed_exposure, beta)
         return alpha, beta, alpha / beta

@@ -67,7 +67,7 @@ def theory_shortfall(scn: Scenario, eps: float) -> float:
     flight at the end. The spend is c * Poisson(events), so the sd is
     c * sqrt(events in flight) = sqrt(c * money rate * window)."""
     rate = scn.budget / scn.horizon
-    window = scn.delay_steps * scn.step + scn.step
+    window = scn.center_delay_steps * scn.step + scn.step
     return norm.isf(eps) * np.sqrt(scn.unit_cost * rate * window)
 
 
@@ -208,6 +208,26 @@ def main() -> None:
         theory_c.append(100 * theory_shortfall(sc, eps) / sc.budget)
         md.append(fmt_row(f"c = {cost:g} (B/c = {sc.budget_events:g} spends)", s))
     md += ["", img("cost.png", "Underspend against the cost per realised token c"), ""]
+
+    # ---- E11: delivery delay of p (delta) and the bound the center plans with (delta_max)
+    deltas = [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
+    under_m = []
+    md += ["## 11. Delivery delay of p", "",
+           "A new p reaches the clients delta seconds after the center decides it (a broker, "
+           "or clients that poll). The center plans with a bound delta_max: its in-flight "
+           "window is ceil(d/step) + ceil(delta_max/step) periods. First delta = delta_max, "
+           "then delta_max = 0 although delta > 0 (the delay is ignored).", "", HEADER]
+    for dl in deltas:
+        sc = replace(scn, message_delay=dl, message_delay_max=dl)
+        s = simulate(sc, bayes(sc, eps), n, seed=11).summary(sc.budget)
+        under_m.append(s["mean_underspend_pct"])
+        md.append(fmt_row(f"delta = delta_max = {dl:g} s", s))
+    md.append("|  |  |  |  |  |  |  |")
+    for dl in (1.0, 5.0, 10.0, 30.0):
+        sc = replace(scn, message_delay=dl)
+        s = simulate(sc, bayes(sc, eps), n, seed=11).summary(sc.budget)
+        md.append(fmt_row(f"delta = {dl:g} s, ignored (delta_max = 0)", s))
+    md += ["", img("message_delay.png", "Underspend against the delivery delay of p"), ""]
     md.append(f"_Total compute: {time.time() - t_start:.0f} s._")
     (OUT / "probabilistic.md").write_text("\n".join(md) + "\n")
 
@@ -219,6 +239,7 @@ def main() -> None:
     _fig_endgame(egs, eg_under, eg_dev)
     _fig_messages(msg_points)
     _fig_cost(costs, under_c, theory_c)
+    _fig_message_delay(deltas, under_m, scn, eps)
     print((OUT / "probabilistic.md").read_text())
 
 
@@ -302,6 +323,21 @@ def _fig_cost(costs, under, theory):
     ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(OUT / "cost.png", dpi=140)
+    plt.close(fig)
+
+
+def _fig_message_delay(deltas, under, scn, eps):
+    fine = np.linspace(0.0, max(deltas), 601)
+    theory = [100 * theory_shortfall(replace(scn, message_delay_max=x), eps) / scn.budget for x in fine]
+    fig, ax = plt.subplots(figsize=(6, 3.8))
+    ax.plot(fine, theory, "--", color=ORANGE, label="in-flight noise only: z(1-eps)*sqrt(rate*window)")
+    ax.plot(deltas, under, "-o", color=BLUE, ms=6, label="simulated (mean), delta_max = delta")
+    ax.set(title="Delivery delay of p: underspend when the center plans for it",
+           xlabel="delivery delay of p, delta = delta_max, s", ylabel="underspend, % of budget")
+    ax.set_ylim(bottom=0)
+    ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(OUT / "message_delay.png", dpi=140)
     plt.close(fig)
 
 

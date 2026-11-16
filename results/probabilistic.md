@@ -136,4 +136,25 @@ Spend = c x realised tokens. B = 5000 units and r stay fixed; lambda is scaled t
 
 ![Underspend against the cost per realised token c](cost.png)
 
-_Total compute: 579 s._
+## 11. Delivery delay of p
+
+A new p reaches the clients delta seconds after the center decides it (a broker, or clients that poll). The center plans with a bound delta_max: its in-flight window is ceil(d/step) + ceil(delta_max/step) periods. First delta = delta_max, then delta_max = 0 although delta > 0 (the delay is ignored).
+
+| strategy | P(overspend) | 95% upper bound | mean overspend, units (if over) | mean underspend % | p95 underspend % | max pacing deviation % |
+|---|---|---|---|---|---|---|
+| delta = delta_max = 0 s | 1.00e-03 | 1.3e-03 | 2.5 | 0.401 | 0.600 | 1.23 |
+| delta = delta_max = 0.5 s | 0 | 7.5e-05 | 0.0 | 0.567 | 0.780 | 1.46 |
+| delta = delta_max = 1 s | 2.50e-05 | 1.2e-04 | 2.0 | 0.553 | 0.780 | 1.43 |
+| delta = delta_max = 2 s | 5.00e-05 | 1.6e-04 | 1.0 | 0.528 | 0.740 | 1.39 |
+| delta = delta_max = 5 s | 1.00e-03 | 1.3e-03 | 3.0 | 0.451 | 0.680 | 1.26 |
+| delta = delta_max = 10 s | 9.50e-04 | 1.2e-03 | 3.3 | 0.496 | 0.760 | 1.33 |
+| delta = delta_max = 30 s | 5.00e-05 | 1.6e-04 | 4.0 | 0.835 | 1.220 | 1.79 |
+|  |  |  |  |  |  |  |
+| delta = 1 s, ignored (delta_max = 0) | 2.13e-03 | 2.5e-03 | 2.7 | 0.376 | 0.580 | 1.24 |
+| delta = 5 s, ignored (delta_max = 0) | 2.26e-02 | 2.4e-02 | 3.4 | 0.278 | 0.500 | 1.64 |
+| delta = 10 s, ignored (delta_max = 0) | 1.33e-01 | 1.4e-01 | 4.6 | 0.170 | 0.400 | 3.02 |
+| delta = 30 s, ignored (delta_max = 0) | 5.09e-01 | 5.1e-01 | 8.2 | 0.068 | 0.300 | 19.23 |
+
+![Underspend against the delivery delay of p](message_delay.png)
+
+_Total compute: 637 s._

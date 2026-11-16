@@ -117,12 +117,14 @@ total over B.
 | T | horizon (time to spend the budget) | yes |
 | d | fixed delay between a spend and its appearance in the budget | yes |
 | Δ | control period (how often the center may broadcast a new p) | yes |
+| δ | delivery delay: a new p reaches the clients δ seconds after the center decides it (0 in the base model, answer C) | no |
+| δ_max | upper bound on δ that the center plans with (§6, *Push or pull*) | yes (chosen) |
 | ε | allowed probability of overspend | yes (chosen) |
 | λ | rate of bid requests (steady Poisson) | **no** |
 | r | probability that a token turns into budget spend (stable) | **no** |
 | N | number of clients | **no** |
 | k | k = λ·r, realised tokens (spends) per second at p = 1; actual spend rate is c·k·p units/s (the only unknown the center needs; see [IMPLEMENTATION.md §1](../IMPLEMENTATION.md#1-how-k-is-estimated)) | **no**, but estimated from the budget |
-| p | token probability broadcast to all clients; takes effect immediately | it sets it |
+| p | token probability broadcast to all clients; takes effect after δ (immediately in the base model) | it sets it |
 
 A request goes to a uniformly random client. That client creates a token with
 probability p, and the token becomes c units of spend with probability r.
@@ -364,12 +366,32 @@ of clients and P the polling interval.
 advanced for L seconds: no newer message (push), or polls that fail or keep
 returning the same `seq` (pull).
 
-**Delivery delay.** A new p takes effect a little after the center decides it.
-Call the largest such delay δ_max: network or broker latency for push, P plus
-latency for pull. During that time clients still bid at the previous p. The
-controller covers it by counting max(p_old, p_new) · δ_max as extra exposure in
-flight. The current model takes δ_max = 0, as answer C says. If δ_max is not
-counted, the ε guarantee is slightly overstated.
+**Delivery delay.** A new p takes effect δ seconds after the center decides it:
+network or broker latency for push, up to P plus latency for pull. The center
+does not know δ, only a bound δ_max that it plans with. During those δ seconds
+clients still bid at the previous p. The base model has δ = δ_max = 0 (answer C).
+
+*How the controller covers it: widen the in-flight window by δ_max.* With a
+delay δ ≤ δ_max, the spend not yet visible after the next period comes from the
+p decided during (t − d − δ, t], plus the new p for the next period. That is at
+most the exposure over (t − d − δ_max, t] plus p_new · Δ. So the center counts a
+decided p as in flight for ceil(d/Δ) + ceil(δ_max/Δ) periods instead of
+ceil(d/Δ), and changes nothing else.
+- **Round up separately.** ceil((d + δ_max)/Δ) can be one period too short.
+- **The estimate of k stays on the safe side.** The exposure counted as visible
+  then never covers more than what has really become visible, so k̂ can only
+  come out a little high.
+- Code: `Scenario.message_delay_max` in the Python simulation,
+  `message_delay_max:` in `PacingController`.
+
+*What it costs and what ignoring it costs*
+([probabilistic.md](probabilistic.md) §3, item 11). Planning with δ_max keeps
+overspend within ε and costs up to one extra period of in-flight window for
+each started period of δ_max. The cost is largest when δ is much smaller than
+the rounded window, because some spend is then counted both as visible and as
+in flight. Ignoring a delivery delay (δ_max = 0 while δ > 0) breaks the
+guarantee quickly: in the default scenario with ε = 10⁻³, a 1 s delay doubles
+the overspend rate, a 5 s delay makes it 2.3·10⁻² and a 10 s delay 1.3·10⁻¹.
 
 **Relays.** A broker, or a forwarding process on each node, may sit between the
 center and the clients. It must hold no state of its own and must not invent

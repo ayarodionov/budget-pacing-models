@@ -72,7 +72,7 @@ remainder is the price of the 30 s delay.
 
 ```bash
 uv run pytest                          # Python tests, ~7 s
-uv run python -m pacing.experiments    # probabilistic controller, ~10 min (--quick: ~45 s)
+uv run python -m pacing.experiments    # probabilistic controller, ~11 min (--quick: ~1 min)
 uv run python -m pacing.backstop       # token cap, versions (a) and (b), ~5 min (--quick: ~30 s)
 uv run python -m pacing.overview       # README comparison chart, ~45 s
 make -C elixir test                    # Elixir: math vs scipy; controller, token cap vs Python; registration

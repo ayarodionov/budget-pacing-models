@@ -156,6 +156,31 @@ What the results show:
     not change: it divides the budget and the visible spend by c and counts spends.
 
     ![Underspend against the cost per realised token c](../results/cost.png)
+11. **A delivery delay of p must be planned for.** If a new p reaches the
+    clients δ seconds after the center decides it (a broker, or clients that
+    poll), the center plans with a bound δ_max and widens its in-flight window by
+    ceil(δ_max/Δ) periods ([system.md](system.md) §6, *Push or pull*). Default
+    scenario, ε = 10⁻³, 40 000 runs per row:
+
+    | δ (true) | 0 | 0.5 s | 2 s | 5 s | 10 s | 30 s |
+    |---|---|---|---|---|---|---|
+    | planned for (δ_max = δ): overspend | 1.0·10⁻³ | 0 | 0.5·10⁻⁴ | 1.0·10⁻³ | 0.95·10⁻³ | 0.5·10⁻⁴ |
+    | planned for: mean underspend | 0.40 % | 0.57 % | 0.53 % | 0.45 % | 0.50 % | 0.84 % |
+    | ignored (δ_max = 0): overspend | | | | **2.3·10⁻²** | **1.3·10⁻¹** | **5.1·10⁻¹** |
+
+    Ignoring even a 1 s delay doubles the overspend rate (2.1·10⁻³); a 5 s delay
+    makes it 23 times ε. Planned for, overspend stays at or below ε.
+
+    The cost is not smooth in δ, because the window grows in whole periods.
+    - **δ much shorter than a period costs most within its band.** At δ = 0.5 s
+      the window already grows by a full 5 s period, so about 4.5 s of exposure
+      is counted both as visible and as in flight: 0.57 % against 0.45 % at
+      δ = 5 s, where the extra period fits exactly.
+    - **A large δ costs more than the in-flight noise alone.** At δ = 30 s,
+      0.84 % against 0.59 % from the noise. The controller's corrections,
+      including the final creep towards B, also reach the clients 30 s late.
+
+    ![Underspend against the delivery delay of p](../results/message_delay.png)
 
 ## 4. Limits
 

@@ -234,3 +234,35 @@ def test_coarser_spend_needs_a_larger_reserve():
         assert res.overspent.mean() < 0.01
         under[c] = res.summary(scn.budget)["mean_underspend_pct"]
     assert under[10.0] > 2 * under[1.0]
+
+
+# --------------------------------------------------------------------------- message delay
+def test_center_window_rounds_the_two_delays_up_separately():
+    # d = 6, delta_max = 6, step = 5: ceil(12 / 5) = 3 periods would be one too few;
+    # visibility takes ceil(6 / 5) = 2 periods and delivery up to ceil(6 / 5) = 2 more
+    assert Scenario(delay=6.0, step=5.0, message_delay_max=6.0).center_delay_steps == 4
+    assert Scenario(delay=10.0, step=5.0, message_delay_max=5.0).center_delay_steps == 3
+    assert Scenario(delay=30.0, step=5.0).center_delay_steps == 6
+
+
+def test_zero_message_delay_changes_nothing():
+    a = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4)
+    scn = Scenario(**{**SMALL.__dict__, "message_delay": 0.0, "message_delay_max": 0.0})
+    b = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4)
+    np.testing.assert_array_equal(a.final_spend, b.final_spend)
+
+
+@pytest.mark.parametrize("delta", [3.0, 12.0])
+def test_planning_with_delta_max_keeps_eps(delta):
+    scn = Scenario(**{**SMALL.__dict__, "delay": 10.0, "message_delay": delta,
+                      "message_delay_max": delta})
+    eps = 0.02
+    res = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=10.0, eps=eps), 6000, seed=8)
+    assert res.overspent.mean() <= eps
+
+
+def test_ignoring_a_message_delay_breaks_eps():
+    scn = Scenario(**{**SMALL.__dict__, "delay": 10.0, "message_delay": 12.0})
+    eps = 0.02
+    res = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=10.0, eps=eps), 3000, seed=8)
+    assert res.overspent.mean() > 5 * eps

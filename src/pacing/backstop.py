@@ -70,6 +70,8 @@ def simulate_with_backstop(
     ``trace``, if a list, receives one dict per control step for run 0 (what the
     center saw and decided); used to generate the Elixir golden tests.
     """
+    if scn.message_delay or scn.message_delay_max:
+        raise NotImplementedError("the token-cap simulation assumes p reaches clients at once")
     if mode not in ("reports", "grants"):
         raise ValueError("mode must be 'reports' or 'grants'")
     if mode == "grants" and (grant_share is None) == (grant_headroom is None):

@@ -50,6 +50,13 @@ yet. If its exposure were added to E without its spend, k̂ would be biased low,
 and low is the dangerous direction for overspend. That exposure, W, is used
 separately: as the in-flight window in the risk check.
 
+**With a delivery delay of p.** If a new p reaches the clients only after up to
+δ_max seconds, the window is widened: a decided p counts as in flight for
+ceil(d/Δ) + ceil(δ_max/Δ) periods, and only then moves into E. Both changes err
+on the safe side: W covers all exposure whose spend is not visible yet, and E
+never covers more than the visible spend came from, so k̂ can only come out a
+little high. Details: [models/system.md](models/system.md) §6, *Push or pull*.
+
 **Uncertainty: a whole distribution, not one number.** With the likelihood above,
 the posterior of k is a Gamma distribution:
 

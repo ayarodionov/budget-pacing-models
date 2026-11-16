@@ -12,7 +12,9 @@ Model (see models/system.md for the full statement)
   the number of realised tokens. c is known to the center: every visible spend is
   a budget decrement of exactly c, so the first one reveals it.
 * A spend becomes visible to the center ``delay`` (d) seconds after it happens.
-  A change of ``p`` takes effect immediately.
+* A new ``p`` reaches the clients ``message_delay`` (delta) seconds after the
+  center decides it (0 by default: immediately). The center knows only an upper
+  bound ``message_delay_max`` (delta_max) and widens its in-flight window by it.
 * The center knows the budget B, the horizon T, the delay d and its own history of
   ``p``. It does NOT know lambda, r or N.
 
@@ -41,6 +43,8 @@ class Scenario:
     delay: float = 30.0  # d, seconds until a spend is visible in the budget
     step: float = 5.0  # control period: the center may change p every `step` s
     unit_cost: float = 1.0  # c, budget units per realised token (known to center)
+    message_delay: float = 0.0  # delta, seconds until a new p reaches the clients
+    message_delay_max: float = 0.0  # delta_max >= delta, the bound the center plans with
 
     @property
     def spend_rate_at_p1(self) -> float:
@@ -61,6 +65,15 @@ class Scenario:
         Rounded up, so the simulated center never sees a spend earlier than d.
         """
         return math.ceil(self.delay / self.step - 1e-9)
+
+    @property
+    def center_delay_steps(self) -> int:
+        """The center's in-flight window, in steps: ceil(d/step) + ceil(delta_max/step).
+
+        Rounded up separately: ceil((d + delta_max)/step) can be one step shorter
+        than the time a decided p needs to show up in the budget.
+        """
+        return self.delay_steps + math.ceil(self.message_delay_max / self.step - 1e-9)
 
     def center_view(self) -> "CenterView":
         return CenterView(self.budget, self.horizon, self.delay, self.step, self.unit_cost)
@@ -159,9 +172,15 @@ def simulate(
         else np.asarray(true_rates, dtype=float).copy()
     )
     n_steps, d_steps, dt = scn.n_steps, scn.delay_steps, scn.step
-    ring = d_steps + 1  # holds steps i - d_steps .. i
-    ring_p = np.zeros((n_runs, ring))
+    ring = d_steps + 1  # spend of steps i - d_steps .. i (visibility in the budget)
     ring_x = np.zeros((n_runs, ring), dtype=np.int64)
+    # the center's bookkeeping of decided p: in flight for center_delay_steps steps
+    cd_steps = scn.center_delay_steps
+    # decided p of the last steps, enough for the in-flight window and the message delay
+    m_steps = int(scn.message_delay // dt)
+    m_frac = scn.message_delay - m_steps * dt  # p_(i-m-1) is in effect for this long in step i
+    hist = max(cd_steps, m_steps + 1) + 1
+    ring_p = np.zeros((n_runs, hist))
 
     obs_spend = np.zeros(n_runs, dtype=np.int64)
     obs_exposure = np.zeros(n_runs)
@@ -179,19 +198,27 @@ def simulate(
         p = np.clip(
             controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0
         )
-        x = rng.poisson(k * p * dt)
+        ring_p[:, i % hist] = p
+        if scn.message_delay == 0:
+            x = rng.poisson(k * p * dt)
+        else:
+            # clients use the p decided m_steps (+ a fraction) ago
+            def decided(j):
+                return ring_p[:, j % hist] if j >= 0 else 0.0
+
+            exposure = decided(i - m_steps - 1) * m_frac + decided(i - m_steps) * (dt - m_frac)
+            x = rng.poisson(k * exposure)
         true_spend += x
-        slot = i % ring
-        ring_p[:, slot] = p
-        ring_x[:, slot] = x
+        ring_x[:, i % ring] = x
         inflight += p * dt
 
         j = i - d_steps  # this step's spend becomes visible before step i + 1
         if j >= 0:
-            sj = j % ring
-            obs_spend += ring_x[:, sj]
-            obs_exposure += ring_p[:, sj] * dt
-            inflight -= ring_p[:, sj] * dt
+            obs_spend += ring_x[:, j % ring]
+        j = i - cd_steps  # the center stops counting this decided p as in flight
+        if j >= 0:
+            obs_exposure += ring_p[:, j % hist] * dt
+            inflight -= ring_p[:, j % hist] * dt
             np.maximum(inflight, 0.0, out=inflight)
 
         dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)

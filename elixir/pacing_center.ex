@@ -61,7 +61,8 @@ defmodule PacingCenter do
     * `:step_ms` - control period in ms (required)
     * `:tick` - `:auto` (default: run every `step_ms`) or `:manual` (call `tick/1`)
     * `:lease_ttl_ms` - default `3 * step_ms`
-    * `:grant_margin_ms` - default `step_ms / 10`
+    * `:grant_margin_ms` - default `step_ms / 10`; must cover the delivery delay of a
+      grant plus clock drift, so set it to at least the controller's `message_delay_max`
     * `:authenticate` - `fn client_id, credentials -> boolean end`
     * `:clock` - zero-arity function returning ms (default monotonic time)
     * `:epoch` - default `System.os_time(:microsecond)` at start

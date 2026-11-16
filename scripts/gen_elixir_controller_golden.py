@@ -45,6 +45,8 @@ def case(name, scn: Scenario, seed=1, **kw):
     ctl = rec.inner
     opts = {"budget": scn.budget, "horizon": scn.horizon, "delay": scn.delay, "step": scn.step,
             "unit_cost": scn.unit_cost, **{k: v for k, v in kw.items() if v is not None}}
+    if scn.message_delay_max:
+        opts["message_delay_max"] = scn.message_delay_max
     if "endgame_time" in opts:
         opts["endgame"] = opts.pop("endgame_time")
     print(f"{name}: final spend {res.final_spend[0]:g} / {scn.budget:g}, "
@@ -66,6 +68,10 @@ def main():
         case("known rate (oracle)", short, known_rate=k),
         case("delay 7 s, step 3 s, eps 0.01", replace(short, delay=7.0, step=3.0), eps=0.01),
         case("no delay", replace(short, delay=0.0)),
+        case("message delay 2 s, planned for 3 s",
+             replace(short, message_delay=2.0, message_delay_max=3.0)),
+        case("message delay 12 s, planned for 12 s, eps 0.01",
+             replace(short, message_delay=12.0, message_delay_max=12.0), eps=0.01),
     ]
     OUT.write_text(json.dumps({"generated_by": "scripts/gen_elixir_controller_golden.py",
                                "columns": ["t", "observed_spend", "observed_exposure",

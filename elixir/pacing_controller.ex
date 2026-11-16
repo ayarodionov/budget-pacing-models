@@ -24,6 +24,11 @@ defmodule PacingController do
   `ceil(delay / step)`, so the spend of period j is assumed visible from the start
   of period j + 1 + ceil(delay / step).
 
+  If a new p reaches the clients only after a delivery delay of up to
+  `message_delay_max` seconds (a broker, or clients that poll), the in-flight
+  window grows by `ceil(message_delay_max / step)` periods. That keeps the ε
+  guarantee; see `models/system.md` §6, *Push or pull*.
+
   `decide/5` is the same decision with E and W passed in explicitly, for callers
   that track exposure themselves.
 
@@ -43,6 +48,8 @@ defmodule PacingController do
     * `:eta`, `:eta_period` - share of the unused risk budget that may be used
       per `eta_period` seconds (defaults 0.5 and 5.0)
     * `:endgame` - finish the planned spend this many seconds before T (default 0)
+    * `:message_delay_max` - largest delay, in seconds, before a new p reaches the
+      clients (default 0: immediately)
     * `:broadcast_threshold` - send p only when it changes by more than this
       fraction (default nil: send every period)
     * `:known_rate` - k if known exactly (oracle; default nil)
@@ -68,6 +75,7 @@ defmodule PacingController do
     eta: 0.5,
     eta_period: 5.0,
     endgame: 0.0,
+    message_delay_max: 0.0,
     flat_after_data: true,
     math: PacingMath,
     # state
@@ -92,9 +100,14 @@ defmodule PacingController do
   defp to_float(_k, nil), do: nil
   defp to_float(_k, v) when is_number(v), do: v * 1.0
 
-  @doc "Number of whole control periods a spend takes to become visible."
+  @doc """
+  Number of whole control periods a decided p stays in flight: until its spend
+  is visible, plus the delivery delay. Rounded up separately, because
+  ceil((delay + message_delay_max) / step) can be one period too short.
+  """
   @spec delay_periods(t) :: non_neg_integer
-  def delay_periods(c), do: ceil(c.delay / c.step - 1.0e-9)
+  def delay_periods(c),
+    do: ceil(c.delay / c.step - 1.0e-9) + ceil(c.message_delay_max / c.step - 1.0e-9)
 
   @doc """
   One control period: decide p from the visible spend, using and updating the
@@ -203,7 +216,8 @@ defmodule PacingController do
 
   defp posterior(c, seen, exposure) do
     {alpha, beta} =
-      if c.flat_after_data and seen > 0 do
+      # with a message delay, spend can show up before its exposure is counted
+      if c.flat_after_data and seen > 0 and exposure > 0 do
         {1.0 + seen, exposure * 1.0}
       else
         {c.prior_shape + seen, c.prior_shape / c.prior_mean + exposure}
