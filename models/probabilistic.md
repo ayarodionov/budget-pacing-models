@@ -66,8 +66,7 @@ overspends 2.6× more often than ε.
 
 ## 3. Results (default: B = 5000, T = 1 h, k = 100/s, d = 30 s, Δ = 5 s, ε = 10⁻³)
 
-Full tables: [results/probabilistic.md](../results/probabilistic.md). Charts:
-`results/trajectories.png`, `delay.png`, `eps.png`, `endgame.png`, `messages.png`.
+Full tables: [results/probabilistic.md](../results/probabilistic.md).
 
 | strategy | P(overspend) | mean underspend | max deviation from even pace |
 |---|---|---|---|
@@ -77,20 +76,33 @@ Full tables: [results/probabilistic.md](../results/probabilistic.md). Charts:
 | Proposed + 300 s end-game | 0.8·10⁻³ | 0.19 % | 8.4 % |
 | Oracle that knows k exactly | 1.05·10⁻³ | 0.40 % | 1.2 % |
 
+![Five sample runs: p, cumulative spend, budget left at the end](../results/trajectories.png)
+
+![Observed overspend rate against the allowed ε](../results/overspend.png)
+
 What the results show:
 
 1. **Not knowing k costs almost nothing.** The proposed controller matches the
    oracle. Learning k is not the hard part; the delay is.
 2. **The underspend is set by delay noise.** With even pacing, the shortfall is
-   about z₁₋ε·√(rate·(d+Δ)), where rate = B/T (`results/delay.png`). It grows with
+   about z₁₋ε·√(rate·(d+Δ)), where rate = B/T. It grows with
    the square root of the delay and the spend rate, so as a share of the budget it
    *falls* as B grows (~1/√B).
+
+   ![Underspend against the delay d](../results/delay.png)
+
 3. **A smaller ε is cheap.** Going from ε = 10⁻³ to 10⁻⁶ raises the underspend
-   from 0.40 % to 0.57 % (`results/eps.png`).
+   from 0.40 % to 0.57 %.
+
+   ![Underspend against ε](../results/eps.png)
+
 4. **Evenness versus budget use is a policy choice (point 5).** Finishing the
    planned spend a little early and then creeping up to B with a small p halves
    the underspend. A 30–60 s end-game already gets most of the gain for a small
-   loss of evenness (`results/endgame.png`).
+   loss of evenness.
+
+   ![End-game time: evenness against underspend](../results/endgame.png)
+
 5. **The initial guess of k matters only during the first d seconds**, when the
    center has no data yet. A 10× too-low guess makes spending uneven at the start
    (8.8 % deviation) but does not raise the overspend risk.
@@ -109,7 +121,10 @@ What the results show:
    and overspend stay the same. The cost is somewhat less even spending: the
    deviation from even pace goes from 1.2 % to 1.3–2.2 %. Recomputing every second
    but sending only on a > 5 % change gives the lowest underspend with about
-   50 messages per hour (`results/messages.png`).
+   50 messages per hour.
+
+   ![Messages to clients against underspend](../results/messages.png)
+
 9. **This controller cannot make overspend impossible**, only rare. A very small
    ε is cheap: 0.67 % underspend at ε = 10⁻⁹ and 0.78 % at ε = 10⁻¹². For
    certainty, see the token caps ([token-cap-a.md](token-cap-a.md),

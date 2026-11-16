@@ -15,3 +15,6 @@ wheels/
 
 # Elixir NIF build output
 elixir/priv/
+
+# Editor settings
+.vscode/

@@ -214,6 +214,7 @@ def main() -> None:
                 if not cap and r == 0.1:
                     baseline = s["mean_underspend_pct"]
         md.append("|  |  |  |  |  |  |  |  |")
+    md += ["", "![Cost of the cap against the failure-report delay, r = 0.1](token-cap-a.png)"]
     (out / "token-cap-a.md").write_text("\n".join(md) + "\n")
 
     # ---- version (b): no reports from clients, grants expire after one step
@@ -235,6 +236,7 @@ def main() -> None:
         "(b) headroom 1.5, cap only": (dict(grant_headroom=1.5), 0.0),
         "(b) headroom 1.5, cap only + 60 s end-game": (dict(grant_headroom=1.5), 60.0),
     }
+    compare: dict[float, dict[str, float]] = {}
     for r in rs:
         scn = replace(base, request_rate=k / r, realization=r)
         rows = []
@@ -246,12 +248,15 @@ def main() -> None:
                      simulate_with_backstop(scn, c, n, failure_delay=30.0, seed=7)))
         for name, res in rows:
             s = res.summary(scn.budget)
+            compare.setdefault(r, {})[name] = s["mean_underspend_pct"]
             md.append(f"| {r:g} | {name} | {int(res.overspent.sum())} | {s['mean_underspend_pct']:.2f} | "
                       f"{s['p95_underspend_pct']:.2f} | {100 * res.cap_bound.mean():.1f} % | "
                       f"{s['mean_max_pace_dev_pct']:.2f} |")
         md.append("|  |  |  |  |  |  |  |")
+    md += ["", "![Version (b) against version (a), by share of bids charged](token-cap-b-compare.png)"]
 
     d1 = base.delay_steps + 1
+    share_pts: dict[float, list[tuple[float, float]]] = {}
     shares = [m / d1 for m in range(1, d1)]
     md += ["", "## Grant share s (cap only, plain pacing)", "",
            "| r | " + " | ".join(f"s = {x:.2f}" for x in shares) + " |",
@@ -263,10 +268,14 @@ def main() -> None:
             res = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=k), n,
                                          seed=7, mode="grants", grant_share=x)
             s = res.summary(scn.budget)
+            share_pts.setdefault(r, []).append((x, s["mean_underspend_pct"]))
             cells.append(f"{s['mean_underspend_pct']:.2f} % (dev {s['mean_max_pace_dev_pct']:.1f} %)")
         md.append(f"| {r:g} | " + " | ".join(cells) + " |")
-    md += ["", "Cells: mean underspend (max pacing deviation)."]
+    md += ["", "Cells: mean underspend (max pacing deviation).", "",
+           "![Underspend against the grant share s](token-cap-b-share.png)"]
     (out / "token-cap-b.md").write_text("\n".join(md) + "\n")
+    _fig_b_compare(compare, out / "token-cap-b-compare.png")
+    _fig_b_share(share_pts, out / "token-cap-b-share.png")
 
     fig, ax = plt.subplots(figsize=(6.5, 3.9))
     colors = [BLUE, ORANGE, AQUA, "#eda100"]
@@ -282,6 +291,63 @@ def main() -> None:
     plt.close(fig)
     print((out / "token-cap-a.md").read_text())
     print((out / "token-cap-b.md").read_text())
+
+
+def _fig_b_compare(compare, path):
+    import matplotlib.pyplot as plt
+
+    from .experiments import AQUA, BLUE, INK2, ORANGE, YELLOW
+
+    names = ["(b) share 0.5, cap only", "(b) share 0.5, cap only + 60 s end-game",
+             "(b) headroom 1.5, cap only", "(a) d_f = 30 s, cap only (reference)"]
+    labels = ["(b) share 0.5", "(b) share 0.5 + 60 s end-game", "(b) headroom 1.5 (knows demand)",
+              "(a) failure reports after 30 s"]
+    colors = [BLUE, ORANGE, AQUA, YELLOW]
+    rs = sorted(compare)
+    fig, axes = plt.subplots(1, len(rs), figsize=(11, 3.6))
+    for ax, r in zip(axes, rs):
+        vals = [compare[r][n] for n in names]
+        bars = ax.bar(range(len(vals)), vals, color=colors, width=0.7, edgecolor="#fcfcfb", linewidth=2)
+        for b, v in zip(bars, vals):
+            ax.annotate(f"{v:.2f}", (b.get_x() + b.get_width() / 2, v), textcoords="offset points",
+                        xytext=(0, 3), ha="center", fontsize=8, color=INK2)
+        ax.set_xticks([])
+        ax.set_axisbelow(True)
+        ax.set_title(f"r = {r:g}" + ("  (every bid charged)" if r == 1 else ""))
+        ax.set_ylim(0, max(max(vals) * 1.25, 0.05))
+        ax.grid(axis="x", visible=False)
+    axes[0].set_ylabel("mean underspend, % of budget")
+    handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in colors]
+    fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=8, frameon=False)
+    fig.suptitle("Token cap without client reports (b) vs with failure reports (a); "
+                 "each panel has its own scale", x=0.01, ha="left")
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+
+
+def _fig_b_share(share_pts, path):
+    import matplotlib.pyplot as plt
+
+    from .experiments import BLUE, INK2
+
+    rs = sorted(share_pts)
+    fig, axes = plt.subplots(1, len(rs), figsize=(11, 3.4))
+    for ax, r in zip(axes, rs):
+        xs, ys = zip(*share_pts[r])
+        ax.plot(xs, ys, "-o", color=BLUE, ms=6)
+        ax.axvline(0.5, color=INK2, lw=1, ls="--")
+        ax.annotate("s = 0.5", (0.5, max(ys)), textcoords="offset points", xytext=(4, -10),
+                    fontsize=8, color=INK2)
+        ax.set_title(f"r = {r:g}")
+        ax.set_xlabel("grant share s")
+        ax.set_ylim(0, max(ys) * 1.15)
+    axes[0].set_ylabel("mean underspend, % of budget")
+    fig.suptitle("Version (b): a larger grant share leaves less unspent; above s ≈ 0.7 spending "
+                 "becomes bursty (see table). Each panel has its own scale", x=0.01, ha="left")
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ Default scenario: B = 5000 units, T = 3600 s, lambda = 1000 req/s, r = 0.1, d = 
 | Proposed + 300 s end-game | 8.25e-04 | 1.1e-03 | 2.7 | 0.185 | 0.260 | 8.41 |
 | Oracle (knows lambda*r exactly) | 1.05e-03 | 1.4e-03 | 2.7 | 0.399 | 0.600 | 1.21 |
 
+![Five sample runs: p, cumulative spend, budget left at the end](trajectories.png)
+
 ## 2. Overspend tolerance holds
 
 Proposed controller, 400000 runs per row.
@@ -23,6 +25,8 @@ Proposed controller, 400000 runs per row.
 | eps = 0.01 | 8.90e-03 | 9.1e-03 | 3.0 | 0.310 | 0.520 | 1.23 |
 | eps = 0.001 | 9.97e-04 | 1.1e-03 | 2.7 | 0.402 | 0.600 | 1.23 |
 | eps = 0.0001 | 8.00e-05 | 1.1e-04 | 2.4 | 0.471 | 0.680 | 1.23 |
+
+![Observed overspend rate against the allowed eps](overspend.png)
 
 ## 3. Effect of the delay d
 
@@ -36,6 +40,8 @@ Proposed controller, 400000 runs per row.
 | d = 120 s | 1.12e-03 | 1.4e-03 | 6.0 | 0.824 | 1.260 | 1.34 |
 | d = 300 s | 9.25e-04 | 1.2e-03 | 6.4 | 1.346 | 2.040 | 1.64 |
 
+![Underspend against the delay d, with the square-root rule](delay.png)
+
 ## 4. Effect of the overspend tolerance eps
 
 | strategy | P(overspend) | 95% upper bound | mean overspend, units (if over) | mean underspend % | p95 underspend % | max pacing deviation % |
@@ -47,6 +53,8 @@ Proposed controller, 400000 runs per row.
 | eps = 1e-05 | 0 | 7.5e-05 | 0.0 | 0.524 | 0.720 | 1.23 |
 | eps = 1e-06 | 0 | 7.5e-05 | 0.0 | 0.567 | 0.760 | 1.23 |
 
+![Underspend against the overspend tolerance eps](eps.png)
+
 ## 5. End-game time: evenness vs underspend
 
 | strategy | P(overspend) | 95% upper bound | mean overspend, units (if over) | mean underspend % | p95 underspend % | max pacing deviation % |
@@ -57,6 +65,8 @@ Proposed controller, 400000 runs per row.
 | end-game 120 s | 1.15e-03 | 1.5e-03 | 2.3 | 0.205 | 0.300 | 3.59 |
 | end-game 300 s | 9.75e-04 | 1.3e-03 | 2.2 | 0.185 | 0.260 | 8.41 |
 | end-game 600 s | 9.75e-04 | 1.3e-03 | 2.9 | 0.174 | 0.220 | 16.63 |
+
+![End-game time: evenness against underspend](endgame.png)
 
 ## 6. Wrong initial guess of lambda*r (true rate fixed)
 
@@ -104,4 +114,6 @@ The center still recomputes p every Δ, but sends it only when the relative chan
 | Δ = 5 s, threshold 10% | 1.15e-03 | 1.5e-03 | 0.400 | 0.620 | 2.15 | 14 |
 | Δ = 5 s, threshold 25% | 1.15e-03 | 1.5e-03 | 0.396 | 0.620 | 3.49 | 8 |
 
-_Total compute: 534 s._
+![Messages to clients against underspend](messages.png)
+
+_Total compute: 535 s._

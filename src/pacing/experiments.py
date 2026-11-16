@@ -105,15 +105,17 @@ def main() -> None:
         res = simulate(scn, c, n, seed=1, keep=5)
         traj[name] = res
         md.append(fmt_row(name, res.summary(scn.budget)))
-    md.append("")
+    md += ["", img("trajectories.png", "Five sample runs: p, cumulative spend, budget left at the end"), ""]
 
     # ---- E2: is eps really honoured? (large run, smaller eps)
     md += ["## 2. Overspend tolerance holds", "",
            f"Proposed controller, {n_big} runs per row.", "", HEADER]
+    over_pts = []
     for e in (1e-2, 1e-3, 1e-4):
         s = simulate(scn, bayes(scn, e), n_big, seed=2).summary(scn.budget)
+        over_pts.append((e, s["overspend_prob"], s["overspend_prob_upper95"]))
         md.append(fmt_row(f"eps = {e:g}", s))
-    md.append("")
+    md += ["", img("overspend.png", "Observed overspend rate against the allowed eps"), ""]
 
     # ---- E3: delay sweep
     delays = [0, 5, 15, 30, 60, 120, 300]
@@ -125,7 +127,7 @@ def main() -> None:
         under_d.append(s["mean_underspend_pct"])
         theory_d.append(100 * theory_shortfall(sc, eps) / sc.budget)
         md.append(fmt_row(f"d = {d} s", s))
-    md.append("")
+    md += ["", img("delay.png", "Underspend against the delay d, with the square-root rule"), ""]
 
     # ---- E4: eps sweep
     epss = [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]
@@ -136,7 +138,7 @@ def main() -> None:
         under_e.append(s["mean_underspend_pct"])
         over_e.append(s["overspend_prob"])
         md.append(fmt_row(f"eps = {e:g}", s))
-    md.append("")
+    md += ["", img("eps.png", "Underspend against the overspend tolerance eps"), ""]
 
     # ---- E5: end-game trade-off (evenness vs underspend)
     egs = [0, 30, 60, 120, 300, 600]
@@ -147,7 +149,7 @@ def main() -> None:
         eg_under.append(s["mean_underspend_pct"])
         eg_dev.append(s["mean_max_pace_dev_pct"])
         md.append(fmt_row(f"end-game {eg} s", s))
-    md.append("")
+    md += ["", img("endgame.png", "End-game time: evenness against underspend"), ""]
 
     # ---- E6: wrong initial guess of lambda*r
     md += ["## 6. Wrong initial guess of lambda*r (true rate fixed)", "", HEADER]
@@ -185,17 +187,41 @@ def main() -> None:
             label = "every period" if thr is None else f"{thr:.0%}"
             md.append(fmt_row_msg(f"Δ = {step:g} s, threshold {label}", s, c.broadcasts.mean()))
             msg_points[step].append((c.broadcasts.mean(), s["mean_underspend_pct"], label))
-    md.append("")
+    md += ["", img("messages.png", "Messages to clients against underspend"), ""]
     md.append(f"_Total compute: {time.time() - t_start:.0f} s._")
     (OUT / "probabilistic.md").write_text("\n".join(md) + "\n")
 
     # ---- figures
     _fig_trajectories(scn, traj["**Proposed: Bayes + risk budget**"], traj["Proposed + 300 s end-game"])
+    _fig_overspend(over_pts)
     _fig_delay(delays, under_d, theory_d, scn)
     _fig_eps(epss, under_e)
     _fig_endgame(egs, eg_under, eg_dev)
     _fig_messages(msg_points)
     print((OUT / "probabilistic.md").read_text())
+
+
+def img(file: str, alt: str) -> str:
+    """Markdown image line; results md files sit next to their charts."""
+    return f"![{alt}]({file})"
+
+
+def _fig_overspend(points):
+    eps, obs, upper = (np.array(v, dtype=float) for v in zip(*points))
+    obs = np.where(obs > 0, obs, np.nan)  # zero overspends cannot be drawn on a log scale
+    fig, ax = plt.subplots(figsize=(6, 3.9))
+    lim = (eps.min() / 3, eps.max() * 3)
+    ax.plot(lim, lim, color=INK2, lw=1, ls="--", label="observed = allowed")
+    ax.errorbar(eps, obs, yerr=[np.zeros_like(obs), np.nan_to_num(upper - obs)], fmt="o", color=BLUE, ms=7,
+                capsize=4, lw=1.5, label="observed (bar: 95 % upper bound)")
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set(xlim=lim, ylim=lim, title="Observed overspend stays at or below ε",
+           xlabel="allowed overspend probability ε", ylabel="observed overspend rate")
+    ax.legend(fontsize=8, loc="upper left")
+    fig.tight_layout()
+    fig.savefig(OUT / "overspend.png", dpi=140)
+    plt.close(fig)
 
 
 def _fig_messages(points):

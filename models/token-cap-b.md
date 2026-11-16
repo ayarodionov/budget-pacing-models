@@ -121,6 +121,8 @@ spending becomes bursty: one step takes almost all of the allowance, and the
 next d seconds get almost nothing. **s = 0.5, "grant half of what is free", is a
 good default.**
 
+![Underspend against the grant share s](../results/token-cap-b-share.png)
+
 ## 5. Results
 
 Default scenario, 20,000 runs per row, plain pacing with the cap. Full table in
@@ -131,6 +133,8 @@ Default scenario, 20,000 runs per row, plain pacing with the cap. Full table in
 | 1.0 | 0.01 % | **0.00 %** | 0.03 % | **0.00 %** |
 | 0.5 | 0.38 % | **0.13 %** | 0.32 % | 0.29 % |
 | 0.1 | 3.63 % | 3.16 % | 3.17 % | 3.14 % |
+
+![Version (b) against version (a), by share of bids charged](../results/token-cap-b-compare.png)
 
 **Zero overspends in every row.** The tests confirm this also for a controller
 that always bids at p = 1, and for every grant rule.

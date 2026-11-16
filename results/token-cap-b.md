@@ -25,6 +25,8 @@ Each step the center grants tokens that expire at the end of the step, at most A
 | 1 | (a) d_f = 30 s, cap only (reference) | 0 | 0.00 | 0.00 | 100.0 % | 1.45 |
 |  |  |  |  |  |  |  |
 
+![Version (b) against version (a), by share of bids charged](token-cap-b-compare.png)
+
 ## Grant share s (cap only, plain pacing)
 
 | r | s = 0.14 | s = 0.29 | s = 0.43 | s = 0.57 | s = 0.71 | s = 0.86 |
@@ -34,3 +36,5 @@ Each step the center grants tokens that expire at the end of the step, at most A
 | 1 | 0.13 % (dev 1.4 %) | 0.03 % (dev 1.4 %) | 0.01 % (dev 1.4 %) | 0.01 % (dev 1.4 %) | 0.02 % (dev 1.6 %) | 0.06 % (dev 3.9 %) |
 
 Cells: mean underspend (max pacing deviation).
+
+![Underspend against the grant share s](token-cap-b-share.png)

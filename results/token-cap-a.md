@@ -48,3 +48,5 @@ Default scenario (B = 5000, T = 3600 s, d = 30 s, step = 5 s), k = λ·r = 100 k
 | 1 | 30 s | Bayes ε=1e-9 + cap + 60 s end-game | 0 | 0.49 | 0.62 | 0.0 % | 2.07 |
 | 1 | 30 s | Cap only (pacing, no risk check) | 0 | 0.00 | 0.00 | 100.0 % | 1.45 |
 |  |  |  |  |  |  |  |  |
+
+![Cost of the cap against the failure-report delay, r = 0.1](token-cap-a.png)
