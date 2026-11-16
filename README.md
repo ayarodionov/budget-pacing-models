@@ -23,13 +23,24 @@ tables. Each model file summarises its own results.
 
 ![Underspend and overspend of the three models](results/overview.png)
 
-The default scenario (B = 5000, T = 1 h, d = 30 s), with r, the share of bids
-that are charged, varied while the spend rate k = λ·r stays at 100. The
-probabilistic controller has the same small underspend for every r and
-overspends in about ε = 0.1 % of runs. The token caps never overspend, but when
-most bids are not charged (r = 0.1) they leave more budget unspent, and more
-the later the center learns about failures; at r = 1 they cost nothing. Table:
-[results/overview.md](results/overview.md).
+The default scenario (B = 5000, T = 1 h, d = 30 s). Two things vary while the
+money spent per second at p = 1 stays at 100 units: r, the share of bids that are
+charged (top), and c, the cost of one realised token (bottom).
+
+- **Overspend.** The probabilistic controller overspends in about ε = 0.1 % of
+  runs. The token caps never do.
+- **Share of bids charged r.** The probabilistic controller has the same small
+  underspend for every r. The caps leave more budget unspent when most bids are
+  not charged (r = 0.1), and more the later the center learns about failures; at
+  r = 1 they cost nothing.
+- **Cost per realised token c.** The probabilistic controller's underspend grows
+  like √c, because fewer, larger spends are noisier: 0.14 % at c = 0.1, 1.3 % at
+  c = 10. The caps' cost comes from unresolved tokens, not from noise, so it
+  hardly changes with c. With small spends the probabilistic controller is the
+  cheapest; at c = 3 and above, the cap with fast failure reports (5 s) costs
+  less.
+
+Table: [results/overview.md](results/overview.md).
 
 ## Implementation
 
@@ -59,7 +70,7 @@ remainder is the price of the 30 s delay.
 uv run pytest                          # Python tests, ~7 s
 uv run python -m pacing.experiments    # probabilistic controller, ~10 min (--quick: ~45 s)
 uv run python -m pacing.backstop       # token cap, versions (a) and (b), ~5 min (--quick: ~30 s)
-uv run python -m pacing.overview       # README comparison chart, ~20 s
+uv run python -m pacing.overview       # README comparison chart, ~45 s
 make -C elixir test                    # Elixir math + NIF (builds the NIF), 126 scipy cases
 make -C elixir bench                   # pure Elixir vs NIF speed
 ```
