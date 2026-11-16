@@ -44,12 +44,12 @@ Table: [results/overview.md](results/overview.md).
 
 ## Implementation
 
-- [IMPLEMENTATION.md](IMPLEMENTATION.md): how the spend rate k is estimated, how
+- [elixir/IMPLEMENTATION.md](elixir/IMPLEMENTATION.md): how the spend rate k is estimated, how
   the pace is calculated, and how to compute the special functions without a
   numerics library.
-- Elixir math kernel (Lanczos ln Γ, incomplete beta and gamma functions):
-  [elixir/pacing_math.ex](elixir/pacing_math.ex), and the same in C as a NIF,
-  [elixir/c_src/pacing_math_nif.c](elixir/c_src/pacing_math_nif.c).
+- [elixir/README.md](elixir/README.md): the Elixir math kernel (Lanczos ln Γ,
+  incomplete beta and gamma functions) in pure Elixir and as a C NIF, with its
+  API, build, tests and benchmark.
 - Python simulation and controllers: `src/pacing/`. Tests: `tests/`.
 
 ### Sample runs of the probabilistic controller

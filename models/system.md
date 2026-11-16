@@ -121,7 +121,7 @@ total over B.
 | λ | rate of bid requests (steady Poisson) | **no** |
 | r | probability that a token turns into budget spend (stable) | **no** |
 | N | number of clients | **no** |
-| k | k = λ·r, realised tokens (spends) per second at p = 1; actual spend rate is c·k·p units/s (the only unknown the center needs; see [IMPLEMENTATION.md §1](../IMPLEMENTATION.md#1-how-k-is-estimated)) | **no**, but estimated from the budget |
+| k | k = λ·r, realised tokens (spends) per second at p = 1; actual spend rate is c·k·p units/s (the only unknown the center needs; see [IMPLEMENTATION.md §1](../elixir/IMPLEMENTATION.md#1-how-k-is-estimated)) | **no**, but estimated from the budget |
 | p | token probability broadcast to all clients; takes effect immediately | it sets it |
 
 A request goes to a uniformly random client. That client creates a token with
@@ -299,7 +299,7 @@ every client) rule out the last two.
 
 - **Traffic that changes over time.** Forecast λ(t) and pace along it.
 - **k that drifts.** Discount old observations (see
-  [IMPLEMENTATION.md](../IMPLEMENTATION.md) §1).
+  [IMPLEMENTATION.md](../elixir/IMPLEMENTATION.md) §1).
 - **A random delay.** Use its upper quantile or model its distribution. The
   token cap (b) relies on d being a hard maximum.
 - **A delay before clients receive a new p.** Add it to the in-flight window.
