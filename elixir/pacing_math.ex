@@ -12,7 +12,7 @@ defmodule PacingMath do
     * `nb_tail/4`        - P(X > m), X | k ~ Poisson(k * exposure), k ~ Gamma(alpha, rate beta)
     * `poisson_tail/2`   - P(X > m), X ~ Poisson(mu)
 
-  `nb_tail/4` is what the controller's risk check calls (MODEL.md, section 3).
+  `nb_tail/4` is what the controller's risk check calls (models/probabilistic.md §1).
   """
 
   @eps 1.0e-15

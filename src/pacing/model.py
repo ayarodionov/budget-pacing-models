@@ -1,8 +1,8 @@
 """Budget pacing model: the scenario, a client-level reference simulator, and a
 fast vectorised aggregate simulator used for Monte Carlo experiments.
 
-Model (see MODEL.md for the full statement)
--------------------------------------------
+Model (see models/system.md for the full statement)
+---------------------------------------------------
 * Bid requests arrive as a Poisson process with rate ``request_rate`` (lambda) and
   are routed to one of N clients uniformly at random.
 * A client that receives a request generates (spends) a token with probability

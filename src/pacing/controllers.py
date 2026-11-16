@@ -10,7 +10,7 @@ overspend:
                            spend rate, P(in-flight spend > remaining) <= eps at each step.
 * ``BayesRiskController``  the proposed strategy: Bayesian estimate of the spend rate
                            plus an explicit overspend-risk budget eps that is never
-                           exceeded over the whole campaign (see MODEL.md, section 3).
+                           exceeded over the whole campaign (see models/probabilistic.md §2).
 """
 
 from __future__ import annotations

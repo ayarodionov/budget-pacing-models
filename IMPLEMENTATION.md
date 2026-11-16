@@ -1,8 +1,9 @@
 # Implementation details
 
-Companion to [MODEL.md](MODEL.md), which states the model, the strategy and
-the overspend guarantee. This file explains how the controller computes its two
-inputs and how to implement the math in Elixir:
+Companion to [models/probabilistic.md](models/probabilistic.md), which states the
+controller and its overspend guarantee. The shared system and formal model are in
+[models/system.md](models/system.md). This file explains how the controller
+computes its two inputs and how to implement the math in Elixir:
 
 1. [How k is estimated](#1-how-k-is-estimated)
 2. [How the pace is calculated](#2-how-the-pace-is-calculated)
@@ -26,7 +27,7 @@ k̂ ≈ 798 / 8.0 ≈ 100 units/s.
 
 **Why divide by E and not by elapsed time.** p changes over time, so each second
 counts with the weight p it had. In period j the spend is Poisson(k·p_j·Δ)
-(MODEL.md §2, *Reduction*). Multiplying these probabilities over all periods gives a
+([system.md](models/system.md) §2, *Reduction*). Multiplying these probabilities over all periods gives a
 likelihood
 
     L(k) ∝ k^S_obs · e^(−k·E),
@@ -56,7 +57,7 @@ It sharpens as the center sees more spend:
 data. The center uses its rough guess k_guess (`prior_mean`), entered as a Gamma
 prior with shape a₀ (`prior_shape`, 2 by default). In effect the guess counts as
 a₀ units of pseudo-spend. This is the only time the guess matters. A wrong guess
-makes spending uneven during these first d seconds, and nothing worse (MODEL.md §4, item 5).
+makes spending uneven during these first d seconds, and nothing worse ([probabilistic.md](models/probabilistic.md) §3, item 5).
 
 **After the first spend is visible, the guess is dropped (`flat_after_data`).**
 The usual Bayesian update would keep the guess forever as α = a₀ + S_obs,
@@ -70,7 +71,7 @@ Poisson rate, so it does not understate how large k could be.
 - **Pacing** uses the mean k̂ = α/β. Its job is to aim the spend at B, and
   aiming deliberately low would only add underspend.
 - **The risk check** uses the *whole* Gamma distribution. Mixing the Poisson
-  in-flight spend over it gives the negative-binomial tail (MODEL.md §3, step 3). So
+  in-flight spend over it gives the negative-binomial tail ([probabilistic.md](models/probabilistic.md) §1, step 3). So
   uncertainty about k automatically widens the reserve while data are scarce and
   narrows it as they accumulate. No separate safety margin for k is needed.
 
@@ -80,7 +81,7 @@ with γ < 1. Old data then fade, and the posterior stays wide enough to follow d
 
 ## 2. How the pace is calculated
 
-Pacing answers "how fast *should* we spend?". The risk check (MODEL.md §3, step 3) then
+Pacing answers "how fast *should* we spend?". The risk check ([probabilistic.md](models/probabilistic.md) §1, step 3) then
 answers "how fast *may* we spend?", and the controller uses the smaller of the
 two. Code: `_Pacer._pace` in `controllers.py`.
 
@@ -93,7 +94,7 @@ two. Code: `_Pacer._pace` in `controllers.py`.
 | B − S_obs | budget not yet *visibly* spent |
 | − k̂·W | minus the spend expected to be in flight (W = exposure of the last d seconds). That money is already committed and will appear in the budget. Without this term the center would plan to spend it twice. |
 | = to_spend | what is still free to plan |
-| plan_left | seconds left in which to spend it: until T, or until T − endgame if an end-game is used (MODEL.md §4, item 4) |
+| plan_left | seconds left in which to spend it: until T, or until T − endgame if an end-game is used ([probabilistic.md](models/probabilistic.md) §3, item 4) |
 | to_spend / plan_left | the **target spend rate** in units/s, i.e. spread what is left evenly over the time that is left |
 | ÷ k̂ | converts a spend rate into p, because spend rate = k·p |
 | clip to [0, 1] | p is a probability |
@@ -115,8 +116,8 @@ comes out slightly above the even-pace value of 0.01389.
   and so the lowest peak spend in flight. Any uneven plan must run faster than
   B/T at some point.
 - **The one deliberate exception is the end.** The final underspend scales with
-  the spend in flight at the very end (MODEL.md §4, item 2). So slowing down in the last
-  minutes helps, which is what the optional end-game does (MODEL.md §4, item 4). It trades
+  the spend in flight at the very end ([probabilistic.md](models/probabilistic.md) §3, item 2). So slowing down in the last
+  minutes helps, which is what the optional end-game does ([probabilistic.md](models/probabilistic.md) §3, item 4). It trades
   a little evenness for less unspent budget.
 - **It allows time to learn k.** Spending gradually gives the center data on k
   before much budget is committed.
@@ -136,7 +137,7 @@ from the current state every Δ. That makes errors **self-correcting**:
 **Why the mean k̂ and not a cautious upper bound?** Pacing is for *aiming*. Using
 an upper bound of k would make p systematically too small and the campaign
 would end with budget left unspent. Protection against overspend is not
-pacing's job. The risk check (MODEL.md §3, step 3) handles it with the whole distribution of
+pacing's job. The risk check ([probabilistic.md](models/probabilistic.md) §1, step 3) handles it with the whole distribution of
 k, so pacing can aim straight.
 
 **What happens at the edges:**
@@ -158,7 +159,7 @@ The production center will be written in Elixir. Erlang's `:math` module has
 functions, or even `log1p`. The controller needs exactly one non-elementary
 quantity, the tail of the in-flight spend:
 
-    P(X > m) = I_x(m + 1, α),    x = V / (β + V)      (negative binomial, MODEL.md §3)
+    P(X > m) = I_x(m + 1, α),    x = V / (β + V)      (negative binomial, models/probabilistic.md §1)
 
 where I is the regularized incomplete beta function. The oracle and plug-in
 baselines also use the Poisson tail P(m + 1, μ), the regularized incomplete gamma
