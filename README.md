@@ -11,7 +11,7 @@ Problem statement and clarifications: [INITIALMODEL.MD](INITIALMODEL.MD).
 
 | File | What it describes | Overspend | Results |
 |---|---|---|---|
-| [models/system.md](models/system.md) | The shared system: actors, how a bid turns into spend, formal model, why Poisson, whether tokens and the number of clients are needed | — | — |
+| [models/system.md](models/system.md) | The shared system: actors, how a bid turns into spend, formal model, why Poisson, whether tokens and the number of clients are needed, how clients subscribe or register | — | — |
 | [models/probabilistic.md](models/probabilistic.md) | Probabilistic controller: Bayesian estimate of the spend rate, even pacing, and a risk budget ε | probability ≤ ε | [results/probabilistic.md](results/probabilistic.md) |
 | [models/token-cap-a.md](models/token-cap-a.md) | Token cap with failure reports: tokens used ≤ B + failures reported | impossible | [results/token-cap-a.md](results/token-cap-a.md) |
 | [models/token-cap-b.md](models/token-cap-b.md) | Token cap with no reports from clients: grants expire after one step, and the budget shows what they cost | impossible, if the delay d is a hard maximum | [results/token-cap-b.md](results/token-cap-b.md) |

@@ -165,4 +165,4 @@ What the results show:
   Solving the dynamic programme for the end-game would tell how much more is
   possible.
 - **Sensitivity to the traffic model.** The ε guarantee assumes Poisson traffic
-  and a fixed delay ([system.md](system.md) §3 and §6).
+  and a fixed delay ([system.md](system.md) §3 and §7).

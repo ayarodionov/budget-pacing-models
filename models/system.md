@@ -6,9 +6,9 @@ file:
 
 | Model | Overspend | Needs from clients |
 |---|---|---|
-| [Probabilistic controller](probabilistic.md) | probability ≤ ε | nothing |
-| [Token cap, version (a)](token-cap-a.md) | impossible | failure reports, tokens used |
-| [Token cap, version (b)](token-cap-b.md) | impossible, if the delay d is a hard maximum | nothing (but clients must hold tokens) |
+| [Probabilistic controller](probabilistic.md) | probability ≤ ε | nothing (clients subscribe to p, §6) |
+| [Token cap, version (a)](token-cap-a.md) | impossible | failure reports, tokens used (clients register, §6) |
+| [Token cap, version (b)](token-cap-b.md) | impossible, if the delay d is a hard maximum | nothing (but clients must hold tokens and register, §6) |
 
 Problem statement and clarifications: [INITIALMODEL.MD](../INITIALMODEL.MD).
 
@@ -295,7 +295,105 @@ For this model, point 3 of the problem statement (each request reaches one
 client chosen at random with equal probability) and answer F (the same p for
 every client) rule out the last two.
 
-## 6. Extensions (all models)
+## 6. How clients join: subscription and registration
+
+Whether the center must know its clients depends on the model:
+
+| Model | What the center must reach | Must the center know its clients? |
+|---|---|---|
+| Probabilistic controller | broadcast p to everyone | **no**: clients *subscribe* to p |
+| Token cap (a) | hand out tokens; receive used and failed counts | **yes**: clients *register* and hold leases |
+| Token cap (b) | hand out each period's grant | **yes**, to split the grant; nothing comes back |
+
+The models' math does not change: k is still learned from the budget alone, and
+N is still not needed (§5). What this section adds are the rules that keep the
+guarantees true when clients join, leave, crash or lose contact.
+
+### Probabilistic controller: subscription
+
+- **Joining.** A client subscribes to the campaign's p channel (a pub/sub topic)
+  and then asks for the current p, so it does not wait for the next broadcast.
+  It starts with p = 0 until it has one.
+- **Ordering.** Each broadcast carries `{campaign, epoch, seq, p}`. A client
+  applies a message only if its `seq` is higher than the last one applied, so a
+  delayed old p cannot overwrite a newer one. A new epoch (for example after the
+  center restarts) resets `seq`.
+- **Fail safe on silence.** The center sends p every period Δ even when it has
+  not changed. With a broadcast threshold
+  ([probabilistic.md](probabilistic.md) §1, step 4) it still sends a small
+  keepalive every Δ. A client that hears nothing for L seconds (for example
+  L = 3Δ) sets p = 0 by itself.
+
+  This is the one real requirement. The controller assumes that a new p, and in
+  particular p = 0, takes effect immediately (answer C). A client cut off from
+  the center cannot receive a stop, so it has to stop on its own. A lost client
+  then adds at most about L seconds of spend at its last p. Keep L small compared
+  with the delay d, or count the extra spend into the in-flight reserve.
+
+The center never learns who the clients are or how many there are.
+
+### Token caps: registration with leases
+
+A token is permission to spend, so the center must know who holds tokens: a
+client that disappears while holding tokens may still be spending them.
+
+**Registering.**
+
+1. The client calls `register(client_id, credentials)`. It must authenticate
+   (for example mTLS or a signed token), so that nobody else can register and
+   draw tokens.
+2. The center replies `{lease_id, lease_ttl, period, epoch, p}`. Registering
+   again with the same `client_id` replaces the old lease instead of adding a
+   second client.
+3. The client keeps the lease alive with heartbeats. In version (a) it sends its
+   used and failed counts with each heartbeat. A lease that gets no heartbeat
+   within `lease_ttl` is *lost*.
+
+**Handing out tokens.**
+
+- **Version (b).** Each period the center splits the grant G among the live
+  leases: in proportion to each client's recent usage, or evenly when nothing is
+  known yet. A grant is valid only for its period.
+- **Version (a).** Each client holds a small wallet of L tokens and asks for a
+  top-up when it runs low, reporting used and failed counts with the request.
+  The allowance A = B/c + F_obs − U counts every token *handed out* as used
+  until the client returns or reports it. Tokens sitting in wallets therefore
+  hold budget, which adds to underspend, so wallets should shrink near the end
+  of the campaign.
+
+**Leaving and losing contact: where safety is decided.**
+
+- **Graceful leave.** `deregister` returns the unused tokens and sends final
+  used and failed counts. The center can reuse the returned tokens at once.
+- **Lost lease.** The center cannot tell a crashed client from one that is cut
+  off and still bidding, so it must assume the worst.
+  - Version (a): the tokens handed to that client stay counted as used. Only
+    after `lease_ttl` + d + d_f may unused tokens return to the pool. By then the
+    client has stopped (next point), its last bids are visible in the budget,
+    and their failures have been reported. A failure reported later is counted
+    as usual.
+  - Version (b): nothing to do. Grants expire with their period, and the spend
+    of the last grant is visible after d, as for any other grant.
+- **The client enforces its own lease.** In version (a), when its lease expires
+  without renewal, the client drops its remaining tokens and stops bidding. In
+  version (b) it uses a grant only within its period, by its own clock; leave a
+  margin for clock drift (or shorten the grant's validity by that margin).
+  Without this rule a cut-off client could keep spending, and the cap's
+  guarantee would not hold.
+
+Combined with these rules, the caps keep their guarantee whatever clients do:
+join, leave, crash, or keep bidding while cut off.
+
+**Mapping to Elixir/OTP.** One GenServer per campaign holds the
+`PacingController` and `TokenCap` state ([../elixir/README.md](../elixir/README.md))
+and the lease table, and runs a step every Δ. Membership comes from `Registry` on
+one node, or `:pg` or `Phoenix.Presence` across a cluster. Inside the cluster
+the center can `Process.monitor` client processes to notice crashes quickly. Even
+so, it should treat a lost process as a lost lease, because a network split looks
+the same as a crash. Each client keeps its own silence timer (p = 0 after L
+seconds) and lease timer, so it fails safe without the center.
+
+## 7. Extensions (all models)
 
 - **Traffic that changes over time.** Forecast λ(t) and pace along it.
 - **k that drifts.** Discount old observations (see
