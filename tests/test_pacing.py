@@ -323,3 +323,29 @@ def test_halt_on_lag_stops_a_runaway_and_never_fires_without_one():
     b = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4,
                  halt_on_lag=5.0)
     np.testing.assert_array_equal(a.final_spend, b.final_spend)
+
+
+# --------------------------------------------------------------------------- lost connection, stalled feed
+def test_lost_link_breaks_eps_unless_the_silence_limit_is_planned_for():
+    """Clients keep the last p for up to L = 15 s after the link drops."""
+    eps = 0.02
+    outage = dict(link_outage=(480.0, 540.0), silence_limit=15.0)
+    plain = BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=eps)
+    planned = BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=eps, max_silence=15.0)
+    assert simulate(SMALL, plain, 4000, seed=9, **outage).overspent.mean() > 2 * eps
+    assert simulate(SMALL, planned, 4000, seed=9, **outage).overspent.mean() <= eps
+
+
+def test_feed_stalled_until_the_end_overspends_unless_the_center_halts():
+    scn = DEFAULT
+    stall = dict(feed_outage=(3300.0, 3600.0))
+    assert simulate(scn, _bayes(scn), 200, seed=6, **stall).overspent.all()
+    res = simulate(scn, _bayes(scn), 200, seed=6, halt_on_stale_feed=10.0, **stall)
+    assert not res.overspent.any()
+
+
+def test_outage_options_change_nothing_when_there_is_no_outage():
+    a = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4)
+    b = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4,
+                 halt_on_stale_feed=10.0, silence_limit=15.0)
+    np.testing.assert_array_equal(a.final_spend, b.final_spend)

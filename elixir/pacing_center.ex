@@ -192,8 +192,23 @@ defmodule PacingCenter do
 
         ctl_opts ->
           check_step!(ctl_opts, step_ms, "controller")
+
+          # a p may keep running until the clients' silence limit if the link drops
+          ctl_opts =
+            if Keyword.get(opts, :plan_for_lost_link, true),
+              do: Keyword.put_new(ctl_opts, :max_silence, (3 * step_ms + dmax_ms) / 1000),
+              else: ctl_opts
+
           {PacingController, PacingController.new(with_delay(ctl_opts, dmax_ms))}
       end
+
+    spend_delay_ms =
+      Keyword.get_lazy(opts, :spend_delay_ms, fn ->
+        case Keyword.fetch!(opts, :controller) do
+          {_mod, _state} -> 0
+          ctl_opts -> round(Keyword.get(ctl_opts, :delay, 0) * 1000)
+        end
+      end)
 
     cap =
       case mode do
@@ -229,6 +244,11 @@ defmodule PacingCenter do
       wall_clock: Keyword.get(opts, :wall_clock, fn -> System.os_time(:millisecond) end),
       sent: %{},
       halted: nil,
+      feed_stale: false,
+      spend_delay_ms: spend_delay_ms,
+      feed_tolerance_ms: Keyword.get(opts, :feed_tolerance_ms, 2 * step_ms),
+      wallet_share: Keyword.get(opts, :wallet_share, 0.5),
+      store: Keyword.get(opts, :store),
       authenticate: Keyword.get(opts, :authenticate, fn _, _ -> true end),
       clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
       epoch: Keyword.get(opts, :epoch, System.os_time(:microsecond)),
@@ -240,6 +260,7 @@ defmodule PacingCenter do
       auto: Keyword.get(opts, :tick, :auto) == :auto
     }
 
+    state = restore(state)
     if state.auto, do: send(self(), :tick)
     {:ok, state}
   end
@@ -295,7 +316,7 @@ defmodule PacingCenter do
           failed: 0
         }
 
-        s = %{s | leases: Map.put(s.leases, id, lease), next_lease: id + 1}
+        s = persist(%{s | leases: Map.put(s.leases, id, lease), next_lease: id + 1})
 
         reply = %{
           lease_id: id,
@@ -314,8 +335,10 @@ defmodule PacingCenter do
   def handle_call({:heartbeat, id, report}, _from, s) do
     case Map.fetch(s.leases, id) do
       {:ok, lease} ->
+        {credited, halted} = {lease.credited, s.halted}
         {lease, s} = credit(s, lease, Map.get(report, :failed), 0)
         s = s |> put_lease(%{lease | last_heartbeat: s.clock.()}) |> check_lag(lease, report)
+        s = if lease.credited != credited or s.halted != halted, do: persist(s), else: s
         {:reply, {:ok, s.lease_ttl_ms}, s}
 
       :error ->
@@ -327,10 +350,16 @@ defmodule PacingCenter do
     case Map.fetch(s.leases, id) do
       {:ok, lease} ->
         {lease, s} = credit(s, lease, Map.get(report, :failed), 0)
-        give = min(n, Reports.allowance(s.cap))
+        allowance = Reports.allowance(s.cap)
+        # near the end each client may hold only its share of what is left, so a
+        # client that is cut off holds back little budget
+        share = max(1, ceil(s.wallet_share * allowance / max(map_size(s.leases), 1)))
+        give = Enum.min([n, allowance, share])
         cap = Reports.record_use(s.cap, give)
         lease = %{lease | handed: lease.handed + give, last_heartbeat: s.clock.()}
-        {:reply, {:ok, give}, %{s | cap: cap} |> put_lease(lease) |> check_lag(lease, report)}
+        # written before the tokens leave the center
+        s = %{s | cap: cap} |> put_lease(lease) |> check_lag(lease, report) |> persist()
+        {:reply, {:ok, give}, s}
 
       :error ->
         {:reply, {:error, :lost}, s}
@@ -343,7 +372,7 @@ defmodule PacingCenter do
     case Map.fetch(s.leases, id) do
       {:ok, lease} ->
         {_lease, s} = credit(s, lease, Map.get(report, :failed), Map.get(report, :unused, 0))
-        {:reply, :ok, %{s | leases: Map.delete(s.leases, id)}}
+        {:reply, :ok, persist(%{s | leases: Map.delete(s.leases, id)})}
 
       :error ->
         {:reply, {:error, :lost}, s}
@@ -354,13 +383,18 @@ defmodule PacingCenter do
 
   defp do_tick(s) do
     s = expire_leases(s)
-    spend = s.visible_spend.()
-    # the controller keeps running while halted; its bookkeeping then counts p it
-    # did not send, which only makes it more cautious
+    {spend, s} = read_feed(s)
+    halt? = s.halted != nil or s.feed_stale
     {p, send?, ctl} = s.ctl_mod.step(s.ctl, spend)
-    {p, send?} = if s.halted, do: {0.0, true}, else: {p, send?}
+
+    # while halted p = 0 is sent; the controller must count 0 as the p in effect,
+    # or its exposure would grow with nothing spent and bias k low
+    {p, send?, ctl} =
+      if halt?, do: {0.0, true, zero_exposure(s.ctl_mod, ctl)}, else: {p, send?, ctl}
+
     seq = s.seq + 1
     s = %{s | ctl: ctl, seq: seq, p: p, sent: prune(Map.put(s.sent, seq, s.clock.()), seq)}
+    s = if s.mode == :grants, do: s, else: persist(s)
     sent_at = s.wall_clock.()
 
     msg =
@@ -370,21 +404,83 @@ defmodule PacingCenter do
 
     for pid <- :pg.get_members(@scope, {:pacing, s.campaign}), do: send(pid, msg)
 
-    if s.mode == :grants, do: send_grants(s, spend, sent_at), else: s
+    if s.mode == :grants, do: send_grants(s, spend, sent_at, halt?), else: s
   end
 
-  defp send_grants(s, spend, sent_at) do
+  defp send_grants(s, spend, sent_at, halt?) do
     {g, cap} = Grants.grant(s.cap, spend)
-    # halted: grant nothing (the allowance is computed anyway, so the window stays right)
-    g = if s.halted, do: 0, else: g
+
+    # halted: grant nothing, and record 0 in the window, since nothing was handed out
+    {g, cap} =
+      if halt?, do: {0, %{cap | window: List.replace_at(cap.window, -1, 0)}}, else: {g, cap}
+
     leases = s.leases |> Map.values() |> Enum.sort_by(& &1.id)
     valid_ms = s.step_ms - s.grant_margin_ms
+    # the grant window is written before the grants leave the center
+    s = persist(%{s | cap: cap})
 
     for {lease, share} <- Enum.zip(leases, split(g, length(leases))) do
       send(lease.pid, {:pacing_grant, s.campaign, s.epoch, s.seq, share, valid_ms, sent_at})
     end
 
     %{s | cap: cap}
+  end
+
+  # The budget feed may return the spend alone, or {spend, as_of_ms}: the wall-clock
+  # time up to which it has processed spend. Spend is normally d old; if it is older
+  # than d + feed_tolerance_ms, the feed has stalled and the center halts until it
+  # is fresh again.
+  defp read_feed(s) do
+    case s.visible_spend.() do
+      {spend, as_of} ->
+        age = s.wall_clock.() - as_of
+        stale? = age > s.spend_delay_ms + s.feed_tolerance_ms
+        if stale? and not s.feed_stale, do: s.on_alarm.({:stale_budget, age})
+        {spend, %{s | feed_stale: stale?}}
+
+      spend ->
+        {spend, s}
+    end
+  end
+
+  defp zero_exposure(mod, ctl) do
+    if Code.ensure_loaded?(mod) and function_exported?(mod, :correct_exposure, 2),
+      do: mod.correct_exposure(ctl, 0.0),
+      else: ctl
+  end
+
+  # ---- durable state: whatever has left the center must survive a restart
+
+  @persisted [:ctl_mod, :ctl, :cap, :leases, :lost, :next_lease, :halted]
+
+  defp persist(%{store: nil} = s), do: s
+
+  defp persist(%{store: {mod, arg}} = s) do
+    :ok = mod.save(arg, Map.take(s, [:campaign, :mode, :epoch | @persisted]))
+    s
+  end
+
+  defp restore(%{store: nil} = s), do: s
+
+  defp restore(%{store: {mod, arg}} = s) do
+    case mod.load(arg) do
+      :none ->
+        persist(s)
+
+      {:ok, saved} ->
+        if {saved.campaign, saved.mode} != {s.campaign, s.mode},
+          do: raise(ArgumentError, "the store holds another campaign or mode")
+
+        now = s.clock.()
+        # a new run of the center: a larger epoch, so clients accept its messages;
+        # restored leases get a fresh ttl to reconnect, their tokens stay counted
+        leases = Map.new(saved.leases, fn {id, l} -> {id, %{l | last_heartbeat: now}} end)
+
+        s
+        |> Map.merge(Map.take(saved, @persisted))
+        |> Map.merge(%{leases: leases, epoch: max(s.epoch, saved.epoch + 1)})
+        |> persist()
+    end
   end
 
   # send times of recent seq, for lag measurement
@@ -498,5 +594,47 @@ defmodule PacingCenter do
       {:ok, _} -> :ok
       {:error, {:already_started, _}} -> :ok
     end
+  end
+end
+
+defmodule PacingCenter.Store do
+  @moduledoc """
+  Where `PacingCenter` keeps the state that must survive a restart: token counts,
+  leases, the grant window and the controller (with its risk used). Without it, a
+  restarted center would hand out the same budget again.
+
+  `save/2` is called before tokens, grants or p leave the center, so it must be
+  durable when it returns. `load/1` returns `{:ok, state}` or `:none`.
+  """
+
+  @callback load(arg :: term) :: {:ok, map} | :none
+  @callback save(arg :: term, state :: map) :: :ok
+end
+
+defmodule PacingCenter.FileStore do
+  @moduledoc """
+  `PacingCenter.Store` in one file: `store: {PacingCenter.FileStore, path}`.
+
+  Each save writes a temporary file, syncs it to disk and renames it over the old
+  one, so a crash leaves either the old or the new state, never half of one. One
+  write per period and per top-up; for many campaigns or very frequent top-ups use
+  a database or a replicated store with the same two callbacks.
+  """
+
+  @behaviour PacingCenter.Store
+
+  @impl true
+  def load(path) do
+    case File.read(path) do
+      {:ok, bin} -> {:ok, :erlang.binary_to_term(bin)}
+      {:error, :enoent} -> :none
+    end
+  end
+
+  @impl true
+  def save(path, state) do
+    tmp = path <> ".tmp"
+    File.write!(tmp, :erlang.term_to_binary(state), [:sync])
+    File.rename!(tmp, path)
   end
 end

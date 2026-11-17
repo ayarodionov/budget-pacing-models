@@ -178,7 +178,16 @@ k, so pacing can aim straight.
   spend delay d, relative to the larger of the last p and the first. It costs
   nothing measurable when nothing is wrong, and it cuts the worst overspend of a
   2-minute unplanned delay from 2 × B to 1.2 % of B (11 % with ×2)
-  ([models/system.md](system.md) §6).
+  ([system.md](system.md) §6).
+- **A stalled budget feed.** The same misreading happens if the budget feed
+  stops updating: the center sees no new spend while time passes. The feed must
+  report how fresh it is; if it is older than d plus a tolerance, the center
+  halts (p = 0) and counts p = 0 as the p in effect, so k̂ is not biased
+  ([system.md](system.md) §6).
+- **A lost link.** If the connection to the clients drops right after a
+  decision, that p runs until the clients' silence limit L. The risk check then
+  charges each p for max(Δ, L) instead of Δ (`max_silence`), which keeps the
+  guarantee at a cost of about 0.13 points of underspend with L = 15 s.
 
 ### The end-game
 

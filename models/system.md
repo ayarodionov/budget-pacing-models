@@ -426,6 +426,49 @@ and plan for it). The rise limit keeps the campaign running and bounds the
 damage, but does not prevent overspend on its own. Use the rise limit (×1.5) always,
 and the age check or the halt wherever a broker or a polling path can back up.
 
+**Lost connection, stalled budget feed, center restart.** A connection that is
+usually fast can still drop for a while. What each model needs to stay safe:
+
+| What breaks | Probabilistic controller | Cap (a) | Cap (b) |
+|---|---|---|---|
+| center → clients lost | clients keep the last p until their silence limit L: plan for it with `max_silence` | a client spends at most its wallet: safe | no grants arrive: safe |
+| burst of old messages after reconnecting | dropped by the age check | safe (tokens are counted) | old grants: dropped by the age check, otherwise unsafe |
+| clients → center lost | nothing needed | budget stays held: safe (underspend) | safe |
+| budget feed stalls | halt on a stale feed, otherwise a runaway near the end | safe (does not use the feed) | halt on a stale feed, otherwise unsafe |
+| center restarts | clients stop after L; risk used must survive | safe **only if the token counts survive** | safe only if the grant window survives |
+
+Rules, all implemented (Python simulation and `PacingCenter`):
+
+1. **Cap (a) is the only certain guarantee** through any outage: it counts
+   tokens, not time. Its conditions: no bid without a token, honest failure
+   reports, and counters that are never lost.
+2. **Durable center state.** Token counts, leases, the grant window and the
+   controller (with its risk used) are written to a store *before* tokens,
+   grants or p leave the center (`store:` option, `PacingCenter.FileStore`). A
+   restarted center starts a new epoch with the old counts. Without this, a
+   restart hands out the same budget again.
+3. **Clients fail safe on their own:** the silence limit L, lease expiry, and
+   the age check on messages.
+4. **The budget feed reports how fresh it is** (`{spend, as_of}`). If it is
+   older than d + a tolerance, the center halts (p = 0, no grants) until it is
+   fresh again. While halted the controller counts p = 0 as the p in effect, so
+   its estimate of k is not biased.
+5. **The risk check plans for the silence limit:** each p is charged as if it
+   may run for max(Δ, L), because after a lost link it does (`max_silence`;
+   `PacingCenter` sets it from the clients' silence limit by default).
+6. **Wallets shrink near the end:** a top-up gives at most a share of the
+   remaining allowance per live client (`wallet_share`, 0.5), so a cut-off
+   client holds back little budget.
+
+Measured in the default scenario (ε = 10⁻³; [probabilistic.md](probabilistic.md)
+§3, item 13): a link lost at 3,300 s raises the overspend rate to 1.3·10⁻³,
+above ε; with `max_silence` = 15 s it falls to 5·10⁻⁵, at a cost of about 0.13
+points of underspend. A budget feed that stalls from 3,300 s to the end makes
+every campaign overspend, by up to 1,180 units; with the halt, none does (7.9 %
+underspend, the budget not spent during the stall). A stall in the middle of
+the campaign does no harm either way: when the feed returns, the controller
+corrects.
+
 **Relays.** A broker, or a forwarding process on each node, may sit between the
 center and the clients. It must hold no state of its own and must not invent
 messages. In particular it must never re-send an old p as if it were new,

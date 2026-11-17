@@ -7,6 +7,13 @@ defmodule FixedP do
   def step(p, _visible_spend), do: {p, true, p}
 end
 
+defmodule AgentStore do
+  @moduledoc "A PacingCenter.Store in an Agent, for tests (survives the center, not the node)."
+  @behaviour PacingCenter.Store
+  def load(a), do: if(st = Agent.get(a, & &1), do: {:ok, st}, else: :none)
+  def save(a, st), do: Agent.update(a, fn _ -> st end)
+end
+
 defmodule RegistrationTest do
   use ExUnit.Case, async: true
 
@@ -644,5 +651,124 @@ defmodule RegistrationTest do
     :ok = PacingClient.heartbeat(a)
     # applied seq 1 right away: no alarm, still running
     refute PacingCenter.info(c).halted
+  end
+
+  # ------------------------------------------------------------------ outages: restart, feed, link
+
+  test "durable state: a restarted center remembers the tokens it handed out" do
+    cp = clock()
+    {:ok, store} = Agent.start_link(fn -> nil end)
+    campaign = make_ref()
+    opts = [clock_pair: cp, campaign: campaign, cap: [budget: 100], store: {AgentStore, store}]
+    {c1, _} = center(:reports, opts)
+    {:ok, %{lease_id: id}} = PacingCenter.register(c1, "a", :secret)
+    assert {:ok, 10} = PacingCenter.request_tokens(c1, id, 10)
+    epoch1 = PacingCenter.info(c1).epoch
+    GenServer.stop(c1)
+
+    {c2, _} = center(:reports, opts)
+    assert allowance(c2) == 90
+    assert PacingCenter.info(c2).epoch > epoch1
+    # the old lease is still known: the client carries on without registering again
+    assert {:ok, _} = PacingCenter.heartbeat(c2, id, %{failed: 4})
+    assert allowance(c2) == 94
+  end
+
+  test "without a store a restarted center would hand out the same budget again" do
+    cp = clock()
+    campaign = make_ref()
+    {c1, _} = center(:reports, clock_pair: cp, campaign: campaign, cap: [budget: 100])
+    {:ok, %{lease_id: id}} = PacingCenter.register(c1, "a", :secret)
+    {:ok, 10} = PacingCenter.request_tokens(c1, id, 10)
+    GenServer.stop(c1)
+    {c2, _} = center(:reports, clock_pair: cp, campaign: campaign, cap: [budget: 100])
+    assert allowance(c2) == 100
+  end
+
+  test "durable state: a halt survives a restart" do
+    cp = {_, advance} = clock()
+    {:ok, store} = Agent.start_link(fn -> nil end)
+    campaign = make_ref()
+
+    opts = [
+      clock_pair: cp,
+      campaign: campaign,
+      cap: [budget: 100],
+      store: {AgentStore, store},
+      on_alarm: fn _ -> :ok end
+    ]
+
+    {c1, _} = center(:reports, opts)
+    {:ok, %{lease_id: id, epoch: epoch}} = PacingCenter.register(c1, "a", :secret)
+    :ok = PacingCenter.tick(c1)
+    advance.(20)
+    {:ok, _} = PacingCenter.heartbeat(c1, id, %{applied_epoch: epoch, applied_seq: 0})
+    assert PacingCenter.info(c1).halted
+    GenServer.stop(c1)
+    {c2, _} = center(:reports, opts)
+    assert PacingCenter.info(c2).halted
+  end
+
+  test "file store: atomic save and load" do
+    path = Path.join(System.tmp_dir!(), "pacing_store_#{System.unique_integer([:positive])}")
+    assert PacingCenter.FileStore.load(path) == :none
+    :ok = PacingCenter.FileStore.save(path, %{a: 1})
+    :ok = PacingCenter.FileStore.save(path, %{a: 2})
+    assert PacingCenter.FileStore.load(path) == {:ok, %{a: 2}}
+    refute File.exists?(path <> ".tmp")
+    File.rm!(path)
+  end
+
+  test "stale budget feed: the center halts until the feed is fresh again" do
+    cp = clock()
+    test = self()
+    {:ok, feed} = Agent.start_link(fn -> System.os_time(:millisecond) - 60_000 end)
+    visible = fn -> {0, Agent.get(feed, & &1)} end
+
+    {c, campaign} =
+      center(:broadcast,
+        clock_pair: cp,
+        visible_spend: visible,
+        on_alarm: fn reason -> send(test, {:alarm, reason}) end
+      )
+
+    :ok = PacingCenter.subscribe(campaign)
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_p, ^campaign, _, 1, +0.0, _}
+    assert_receive {:alarm, {:stale_budget, age}} when age >= 60_000
+
+    # the feed catches up: p is sent again, no resume needed
+    Agent.update(feed, fn _ -> System.os_time(:millisecond) end)
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_p, ^campaign, _, 2, 1.0, _}
+  end
+
+  test "halted: the controller counts the p actually sent (0), so k is not biased low" do
+    stale = fn -> {0, System.os_time(:millisecond) - 600_000} end
+
+    {:ok, c} =
+      start_center(controller: ctl_opts(), visible_spend: stale, on_alarm: fn _ -> :ok end)
+
+    :ok = PacingCenter.tick(c)
+    assert List.last(PacingCenter.info(c).ctl.in_flight) == 0.0
+  end
+
+  test "lost link: the center plans for the clients' silence limit by default" do
+    {:ok, c} = start_center(controller: ctl_opts())
+    # 3 periods of 5 s
+    assert PacingCenter.info(c).ctl.max_silence == 15.0
+    {:ok, c} = start_center(controller: ctl_opts(), plan_for_lost_link: false)
+    assert PacingCenter.info(c).ctl.max_silence == nil
+  end
+
+  test "(a) near the end each client may hold only its share of what is left" do
+    cp = clock()
+    {c, _} = center(:reports, clock_pair: cp, cap: [budget: 20])
+    {:ok, %{lease_id: a}} = PacingCenter.register(c, "a", :secret)
+    {:ok, %{lease_id: _b}} = PacingCenter.register(c, "b", :secret)
+    # half of 20, split between 2 clients
+    assert {:ok, 5} = PacingCenter.request_tokens(c, a, 10)
+    # half of the 15 left, split between 2
+    assert {:ok, 4} = PacingCenter.request_tokens(c, a, 10)
   end
 end

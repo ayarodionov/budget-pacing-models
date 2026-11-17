@@ -123,13 +123,45 @@ At every control step:
    The check starts to bind only near the end, when the budget left becomes
    comparable to the spend in flight. From then on p shrinks step by step.
 
-   **The share η.** Spending the whole remaining risk budget in one step would
-   leave nothing for later steps, so each step may use only a share. η is the
-   share of the unused risk budget that may be used **per 5 seconds** (0.5 by
-   default), so one step of length Δ may use η_Δ = 1 − (1 − η)^(Δ/5 s). Defining
-   it per unit of time keeps the behaviour the same when Δ changes. (An earlier
-   version applied η per *step*; with a short Δ it used up its risk budget
-   faster in real time and stopped too early, so Δ = 1 s did worse than Δ = 5 s.)
+   **The share η: how fast the risk budget may be used.** The risk budget is
+   needed in the last minutes, step after step, as p creeps towards B. If one
+   step could use all that is left (ε − risk_used), every later step would have
+   no allowance and would have to send p = 0, leaving the rest of the budget
+   unspent. So each step may use only a share of what is left, and the
+   allowance shrinks gradually instead of all at once.
+
+   η is that share **per 5 seconds** (0.5 by default): in any 5 s the controller
+   may use at most half of the risk budget still unused. One step of length Δ
+   gets the matching share
+
+       η_Δ = 1 − (1 − η)^(Δ/5 s)
+
+   which gives the same total over the same time, whatever Δ is:
+
+   | Δ | 1 s | 5 s | 10 s |
+   |---|---|---|---|
+   | η_Δ (η = 0.5) | 0.13 | 0.5 | 0.75 |
+
+   For example, five 1-second steps at the maximum rate leave (1 − 0.13)⁵ = ½
+   of the unused budget, the same as one 5-second step.
+
+   (An earlier version applied η per *step*. With Δ = 1 s it then used half the
+   remaining budget every second instead of every 5 s, ran out early and
+   stopped too soon, so Δ = 1 s did worse than Δ = 5 s.)
+
+   **Choosing η** (default scenario, ε = 10⁻³; results §7):
+
+   | η | 0.1 | 0.25 | 0.5 | 0.9 | 1 |
+   |---|---|---|---|---|---|
+   | mean underspend | 0.41 % | 0.40 % | 0.40 % | 0.43 % | 0.44 % |
+   | overspend rate | 0.4·10⁻³ | 0.6·10⁻³ | 0.9·10⁻³ | 1.0·10⁻³ | 1.1·10⁻³ |
+
+   - **Too small:** the controller is so careful that it never uses its whole
+     allowance (overspend 0.4·10⁻³ against ε = 10⁻³), and p is cut too early.
+   - **Too large:** it uses the allowance in the first steps of the final
+     phase and has none left for the last ones. (The guarantee holds for any η;
+     1.1·10⁻³ at η = 1 is simulation noise around ε, 40 000 runs.)
+   - **0.25–0.5** is the flat optimum; the exact value hardly matters.
 4. **Send or keep** (only if a broadcast threshold is set). If the new p is within
    the threshold of the p that clients already use, *and* that old p also passes
    the risk check in step 3, keep the old p and send nothing. Otherwise send the
@@ -187,7 +219,48 @@ Full tables: [results/probabilistic.md](../results/probabilistic.md).
 
 ![Five sample runs: p, cumulative spend, budget left at the end](../results/trajectories.png)
 
+*How to read the chart above.* Five simulated campaigns (B = 5000, T = 1 h,
+d = 30 s, ε = 10⁻³), run without an end-game (blue) and with a 300 s end-game
+(orange). Each line is one campaign.
+
+- **Left, the broadcast p.**
+  - At the start p jumps around: the center runs on its initial guess of k
+    until real spend becomes visible after d = 30 s, then settles quickly.
+  - In the middle p is almost flat: about 0.0139 for blue, the even pace
+    5000 / (100 × 3600), and 0.0152 for orange, which aims to finish 300 s
+    early. The small wobbles correct for random luck.
+  - At the end orange drops to almost 0 at about 3,250 s and flickers: the
+    creep phase, where the risk check lets through only small p. Blue keeps
+    going until about 3,570 s, then the risk check cuts p sharply.
+- **Middle, cumulative spend.** Blue lies on the dashed even-pace line. Orange
+  runs slightly ahead of it and reaches the budget at about 3,300 s; that is
+  the end-game's cost in evenness.
+- **Right, budget left in the last 10 minutes.** No line goes below 0. Blue
+  finishes with about 15–35 units unspent: the safety margin for the spend in
+  flight that the center cannot see yet. Orange creeps down in small steps and
+  finishes with about 8–15 units, roughly half the underspend.
+
 ![Observed overspend rate against the allowed ε](../results/overspend.png)
+
+*How to read the chart above.* It tests the central promise: with an allowed
+overspend probability ε, at most a share ε of campaigns overspend.
+
+- **Horizontal axis:** the ε given to the controller. **Vertical axis:** the
+  share of simulated campaigns that actually overspent. Both are logarithmic.
+- **Dashed diagonal:** observed = allowed. On or below it, the promise is kept.
+- **Dots:** the measured rates, 400,000 campaigns each: 8.9·10⁻³ for ε = 10⁻²,
+  9.97·10⁻⁴ for ε = 10⁻³, and 8.0·10⁻⁵ (32 campaigns) for ε = 10⁻⁴.
+- **Bar above a dot:** the 95 % upper confidence bound, i.e. how high the true
+  rate could plausibly be given the number of runs. It is longest at ε = 10⁻⁴,
+  where only 32 overspends were seen.
+
+All three dots are on or just under the diagonal, so the promise holds over a
+100-fold range of ε. They are also *close* to it, which matters as much: a
+controller that never spent would keep the promise too. Dots near the line show
+that the controller uses nearly all of its allowance, which is what keeps the
+unspent budget small. This chart is the empirical check behind §2: the proof is
+exact only when k is drawn from the prior, and for a fixed, unknown k the
+guarantee rests on simulations like this one.
 
 What the results show:
 
@@ -216,7 +289,7 @@ What the results show:
 5. **The initial guess of k matters only during the first d seconds**, when the
    center has no data yet. A 10× too-low guess makes spending uneven at the start
    (8.8 % deviation) but does not raise the overspend risk.
-6. η (how fast the risk budget is used) hardly matters between 0.25 and 0.5.
+6. η (how fast the risk budget may be used, §1 step 3) hardly matters between 0.25 and 0.5.
 7. **How often p is updated matters little while Δ is well below d.** With d = 30 s:
 
    | Δ | 1 s | 2 s | 5 s | 10 s | 30 s |
@@ -304,6 +377,30 @@ What the results show:
     preventing overspend. When nothing is wrong, a rise limit of ×1.5 costs
     nothing measurable: 0.40 % underspend as without it, and 0.38 % with a 10×
     too low initial guess of k.
+13. **Outages: a lost link must be planned for; a stalled budget feed needs a
+    halt.** Default scenario, ε = 10⁻³, 40 000 runs per row. A lost link: no
+    message reaches the clients for 60 s, and they keep the last p for their
+    silence limit L = 15 s. A stalled feed: the center keeps seeing old spend.
+
+    | situation | without the rule: overspend rate (worst) | with the rule | underspend with the rule |
+    |---|---|---|---|
+    | no outage | 0.85·10⁻³ | 0 (`max_silence` 15 s) | 0.53 % (0.40 % without) |
+    | link lost at 3,300 s | **1.3·10⁻³** (11 units) | 0.05·10⁻³ (`max_silence`) | 0.57 % |
+    | link lost at 3,500 s | 0.9·10⁻³ (16 units) | 0 (`max_silence`) | 0.96 % |
+    | feed stalls 1,000–1,600 s | 0.95·10⁻³ | 0.9·10⁻³ (halt) | 0.46 % |
+    | feed stalls from 3,300 s to the end | **100 %** (1,179 units) | 0 (halt) | 7.9 % |
+
+    - **A lost link** lets the last p run for L instead of Δ, longer than the
+      risk check charged for, so overspend exceeds ε. Charging each p for
+      max(Δ, L) (`max_silence`) brings it back down, for about 0.13 points of
+      underspend.
+    - **A stalled feed in the middle** does no harm: when it returns, the
+      controller sees the real spend and corrects.
+    - **A stalled feed at the end** is the dangerous case: the center never sees
+      the budget run out and keeps paying. The halt on a stale feed prevents
+      it; the cost is the budget not spent while the feed was stalled.
+    - **A center restart** is not simulated here: it is a matter of storing the
+      state durably ([system.md](system.md) §6), tested in Elixir.
 
 ## 4. Limits
 

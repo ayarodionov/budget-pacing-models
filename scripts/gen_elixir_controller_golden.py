@@ -76,6 +76,7 @@ def main():
              replace(short, message_delay=120.0), max_rise=1.5),
         case("max_rise 2 per 10 s, guess 10x too high", short, max_rise=2.0, rise_period=10.0,
              prior_mean=k * 10),
+        case("max_silence 15 s", short, max_silence=15.0),
     ]
     OUT.write_text(json.dumps({"generated_by": "scripts/gen_elixir_controller_golden.py",
                                "columns": ["t", "observed_spend", "observed_exposure",

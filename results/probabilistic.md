@@ -173,4 +173,21 @@ Age check: clients ignore a p older than 1 s. Rise limit: p may grow by at most 
 | no delay, rise limit x1.5 (cost) | 7.75e-04 | 2.5 | 8 | 0.402 | 1.22 |
 | no delay, rise limit x1.5, guess 10x too low | 9.25e-04 | 2.7 | 9 | 0.382 | 8.84 |
 
-_Total compute: 657 s._
+## 13. Lost connection and stalled budget feed
+
+Lost link: from t0 for 60 s no message reaches the clients; they keep the last p for their silence limit L = 15 s, then stop. With max_silence = L the risk check charges each p for max(step, L). Stalled feed: the center keeps seeing the spend visible at t0; with a halt it sends p = 0 once the feed is more than d + 10 s old.
+
+| setting | P(overspend) | mean overspend, units (if over) | worst overspend, units | mean underspend % | max pacing deviation % |
+|---|---|---|---|---|---|
+| no outage | 8.50e-04 | 2.1 | 6 | 0.402 | 1.23 |
+| no outage, max_silence = 15 s (cost) | 0 | 0.0 | 0 | 0.527 | 1.23 |
+| link lost at 3300 s | 1.30e-03 | 2.8 | 11 | 0.425 | 1.58 |
+| link lost at 3300 s, max_silence = 15 s | 5.00e-05 | 2.0 | 2 | 0.569 | 1.58 |
+| link lost at 3500 s | 8.75e-04 | 4.6 | 16 | 0.603 | 1.51 |
+| link lost at 3500 s, max_silence = 15 s | 0 | 0.0 | 0 | 0.960 | 1.51 |
+| feed stalls 1000-1600 s | 9.50e-04 | 2.3 | 9 | 0.358 | 10.45 |
+| feed stalls 1000-1600 s, halt | 9.25e-04 | 2.2 | 6 | 0.460 | 16.30 |
+| feed stalls from 3300 s to the end | 1.00e+00 | 881.5 | 1179 | 0.000 | 17.63 |
+| feed stalls from 3300 s to the end, halt | 0 | 0.0 | 0 | 7.912 | 7.91 |
+
+_Total compute: 712 s._

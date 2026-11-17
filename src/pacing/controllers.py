@@ -212,6 +212,10 @@ class BayesRiskController(_Pacer):
     If ``known_rate`` is given the controller knows k exactly (an oracle used as a
     lower bound on achievable underspend).
 
+    ``max_silence`` (seconds): the clients' silence limit L. If the connection is
+    lost right after a decision, clients keep that p for up to L before they stop,
+    so the risk check charges each p for max(step, L) instead of one step.
+
     ``broadcast_threshold`` (relative change of p) makes the center send a new p
     only when it differs from the p clients already use by more than that fraction.
     The old p is kept only if it also passes the risk check, and the risk charge is
@@ -224,9 +228,13 @@ class BayesRiskController(_Pacer):
                  eta_period: float = 5.0,
                  known_rate: float | None = None,
                  broadcast_threshold: float | None = None,
+                 max_silence: float | None = None,
                  tails: str = "scipy", **kw):
         super().__init__(view, prior_mean, **kw)
         self.eps = float(eps)
+        # if the connection to the clients drops right after a decision, its p keeps
+        # running until the clients' silence limit: charge the risk for that long
+        self.horizon = max(view.step, float(max_silence or 0.0))
         self.eta = float(eta)
         self.eta_step = 1.0 - (1.0 - float(eta)) ** (view.step / float(eta_period))
         self.known_rate = known_rate
@@ -260,7 +268,8 @@ class BayesRiskController(_Pacer):
         p = self._rise_cap(self._pace(t, remaining - k_est * w, k_est))
         q0 = self._tail(remaining, alpha, beta, w)  # risk already locked in
         allow = self.eta_step * np.clip(self.eps - self.risk_used, 0.0, None)
-        q1 = self._tail(remaining, alpha, beta, w + p * dt)
+        h = self.horizon  # how long this p may run: one step, or the silence limit
+        q1 = self._tail(remaining, alpha, beta, w + p * h)
 
         bad = (q1 - q0) > allow
         if bad.any():
@@ -270,17 +279,17 @@ class BayesRiskController(_Pacer):
             p = p.copy()
             p[bad] = _bisect_p(
                 p[bad],
-                lambda pp: self._tail(rb, ab, bb, wb + pp * dt) - q0b <= allowb,
+                lambda pp: self._tail(rb, ab, bb, wb + pp * h) - q0b <= allowb,
             )
             q1 = q1.copy()
-            q1[bad] = self._tail(rb, ab, bb, wb + p[bad] * dt)
+            q1[bad] = self._tail(rb, ab, bb, wb + p[bad] * h)
 
         if self.broadcast_threshold is None:
             send = np.ones(p.shape, dtype=bool)
         else:
             last = self.p_last
             close = np.abs(p - last) <= self.broadcast_threshold * last
-            q_last = self._tail(remaining, alpha, beta, w + last * dt)
+            q_last = self._tail(remaining, alpha, beta, w + last * h)
             hold = close & ((q_last - q0) <= allow)  # keeping the old p must be safe too
             p = np.where(hold, last, p)
             q1 = np.where(hold, q_last, q1)

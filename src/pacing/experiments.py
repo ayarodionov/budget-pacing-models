@@ -260,6 +260,32 @@ def main() -> None:
         res = simulate(sc, bayes(sc, eps, **kw), n, seed=12, halt_on_lag=halt)
         md.append(fmt_row_over(name, res.summary(sc.budget), res.final_spend - sc.budget))
     md.append("")
+
+    # ---- E13: lost connection and stalled budget feed
+    md += ["## 13. Lost connection and stalled budget feed", "",
+           "Lost link: from t0 for 60 s no message reaches the clients; they keep the last p for "
+           "their silence limit L = 15 s, then stop. With max_silence = L the risk check charges "
+           "each p for max(step, L). Stalled feed: the center keeps seeing the spend visible at t0; "
+           "with a halt it sends p = 0 once the feed is more than d + 10 s old.", "", HEADER_OVER]
+    rows13 = [
+        ("no outage", {}, {}),
+        ("no outage, max_silence = 15 s (cost)", {"max_silence": 15.0}, {}),
+        ("link lost at 3300 s", {}, {"link_outage": (3300.0, 3360.0), "silence_limit": 15.0}),
+        ("link lost at 3300 s, max_silence = 15 s", {"max_silence": 15.0},
+         {"link_outage": (3300.0, 3360.0), "silence_limit": 15.0}),
+        ("link lost at 3500 s", {}, {"link_outage": (3500.0, 3560.0), "silence_limit": 15.0}),
+        ("link lost at 3500 s, max_silence = 15 s", {"max_silence": 15.0},
+         {"link_outage": (3500.0, 3560.0), "silence_limit": 15.0}),
+        ("feed stalls 1000-1600 s", {}, {"feed_outage": (1000.0, 1600.0)}),
+        ("feed stalls 1000-1600 s, halt", {}, {"feed_outage": (1000.0, 1600.0), "halt_on_stale_feed": 10.0}),
+        ("feed stalls from 3300 s to the end", {}, {"feed_outage": (3300.0, 3600.0)}),
+        ("feed stalls from 3300 s to the end, halt", {},
+         {"feed_outage": (3300.0, 3600.0), "halt_on_stale_feed": 10.0}),
+    ]
+    for name, ckw, skw in rows13:
+        res = simulate(scn, bayes(scn, eps, **ckw), n, seed=13, **skw)
+        md.append(fmt_row_over(name, res.summary(scn.budget), res.final_spend - scn.budget))
+    md.append("")
     md.append(f"_Total compute: {time.time() - t_start:.0f} s._")
     (OUT / "probabilistic.md").write_text("\n".join(md) + "\n")
 

@@ -162,6 +162,10 @@ def simulate(
     true_rates: np.ndarray | None = None,
     keep: int = 0,
     halt_on_lag: float | None = None,
+    link_outage: tuple[float, float] | None = None,
+    silence_limit: float | None = None,
+    feed_outage: tuple[float, float] | None = None,
+    halt_on_stale_feed: float | None = None,
 ) -> SimResult:
     """Run ``n_runs`` independent replications of one campaign in parallel.
 
@@ -172,6 +176,16 @@ def simulate(
     from heartbeats (clients report the last p they applied; the first report comes
     one step after the first p arrives). If the measured delay exceeds
     ``message_delay_max`` + allowance, the center sends p = 0 from then on.
+
+    ``link_outage`` (t0, t1): no message from the center reaches the clients during
+    [t0, t1). Clients keep the last p they received until their ``silence_limit``
+    (default 3 steps + delta_max) has passed since it arrived, then use p = 0. The
+    center does not know about the outage and keeps deciding.
+
+    ``feed_outage`` (t0, t1): the budget feed stalls during [t0, t1): the center
+    keeps seeing the spend that was visible at t0. With ``halt_on_stale_feed``
+    (seconds, a tolerance) the center notices that the feed is older than
+    d + tolerance and sends p = 0 until it is fresh again.
     """
     rng = np.random.default_rng(seed)
     k = (
@@ -203,16 +217,33 @@ def simulate(
     c = scn.unit_cost
     stale = scn.message_age_limit is not None and scn.message_delay > scn.message_age_limit
     halt_step = _halt_step(scn, halt_on_lag)
+    if link_outage is not None and scn.message_delay:
+        raise ValueError("link_outage is simulated with immediate delivery only")
+    lo0, lo1 = (math.ceil(t / dt - 1e-9) for t in link_outage) if link_outage else (math.inf, math.inf)
+    silence = silence_limit if silence_limit is not None else 3 * dt + scn.message_delay_max
+    fo0, fo1 = (math.ceil(t / dt - 1e-9) for t in feed_outage) if feed_outage else (math.inf, math.inf)
+    p_kept = np.zeros(n_runs)  # the last p the clients received before a link outage
+    seen = obs_spend
     controller.reset(n_runs)
     for i in range(n_steps):
+        if i < fo0 or i >= fo1:
+            seen = obs_spend.copy()  # the feed is current; during an outage it stays frozen
         p = np.clip(
-            controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0
+            controller.decide(i * dt, c * seen, obs_exposure, inflight), 0.0, 1.0
         )
         if i >= halt_step:
             p = np.zeros(n_runs)
+        if halt_on_stale_feed is not None and fo0 <= i < fo1 and (i - fo0) * dt > halt_on_stale_feed:
+            p = np.zeros(n_runs)  # the feed is too old: halt until it is fresh again
         ring_p[:, i % hist] = p
+        p_clients = p
+        if i == lo0 - 1:
+            p_kept = p.copy()
+        if lo0 <= i < lo1:
+            # cut off: the last received p runs until the silence limit, then p = 0
+            p_clients = p_kept if (i - (lo0 - 1)) * dt < silence else np.zeros(n_runs)
         if scn.message_delay == 0:
-            x = rng.poisson(k * p * dt)
+            x = rng.poisson(k * p_clients * dt)
         else:
             # clients use the p decided m_steps (+ a fraction) ago
             def decided(j):

@@ -50,6 +50,10 @@ defmodule PacingController do
     * `:endgame` - finish the planned spend this many seconds before T (default 0)
     * `:message_delay_max` - largest delay, in seconds, before a new p reaches the
       clients (default 0: immediately)
+    * `:max_silence` - the clients' silence limit L in seconds. If the connection
+      drops right after a decision, its p keeps running for up to L, so the risk
+      check charges each p for max(step, L) instead of one step (default nil: one
+      step). `PacingCenter` sets it from the clients' silence limit.
     * `:max_rise` - p may grow by at most this factor per `:rise_period` seconds
       (default: the spend delay), relative to the larger of the last p and the
       first p; decreases are not limited (default nil: no limit). A guard against
@@ -82,6 +86,7 @@ defmodule PacingController do
     endgame: 0.0,
     message_delay_max: 0.0,
     max_rise: nil,
+    max_silence: nil,
     rise_period: nil,
     p_first: nil,
     flat_after_data: true,
@@ -174,7 +179,8 @@ defmodule PacingController do
     {alpha, beta, k_est} = posterior(c, seen, observed_exposure)
     k_est = c.known_rate || k_est
     w = inflight_exposure * 1.0
-    dt = c.step
+    # how long this p may run: one step, or the silence limit if the link drops
+    dt = max(c.step, c.max_silence || 0.0)
     tail = fn exposure -> tail(c, remaining, alpha, beta, exposure) end
 
     {p, c} = rise_cap(c, pace(c, t, remaining - k_est * w, k_est))
