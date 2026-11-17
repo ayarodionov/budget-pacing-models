@@ -264,7 +264,19 @@ counts that survive a center restart (durable store, [system.md](system.md) §6)
 Compared with version (b): (b) stops cut-off clients faster (within one period)
 and gets its budget back by itself after the outage, but its guarantee needs
 synchronised clocks and timing bounds ([token-cap-b.md](token-cap-b.md) §6).
-These points follow from the rules and are checked by the Elixir tests (cut-off
-clients, lost leases, restarts); the token-cap simulation does not model a
-link outage yet, so there are no measured costs.
+**Measured** (default scenario, plain pacing with the cap, failures reported
+after 5 s, wallets of up to 200 tokens in total; 20,000 runs per row; full
+table in [results/token-cap-a.md](../results/token-cap-a.md)): no run
+overspends in any outage, including clients bidding at p = 1 through an outage
+that lasts to the end. An outage costs only the bids that could not be made:
+
+| underspend | no outage | 60 s from 3,300 s | 60 s from 3,500 s | from 3,300 s to the end | 300 s from 1,000 s |
+|---|---|---|---|---|---|
+| r = 0.1 | 0.72 % | 0.89 % | 1.35 % | 7.29 % | 0.52 % |
+| r = 1 | 0.00 % | 0.00 % | 0.00 % | 7.29 % | 0.00 % |
+
+An outage in the middle costs nothing: the controller makes up the lost spend
+later. Wallets topped up on demand change nothing while connected. In the
+simulation all clients reconnect; a client that never returns would also keep
+its wallet's budget.
 

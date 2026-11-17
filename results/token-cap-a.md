@@ -50,3 +50,24 @@ Default scenario (B = 5000, T = 3600 s, d = 30 s, step = 5 s), k = λ·r = 100 k
 |  |  |  |  |  |  |  |  |
 
 ![Cost of the cap against the failure-report delay, r = 0.1](token-cap-a.png)
+
+## Lost connection between center and clients
+
+No message passes either way during the outage; clients keep the last p for their silence limit (15 s), then stop. Plain pacing with the cap, failures reported after 5 s; clients hold wallets of up to 200 tokens in total, topped up on demand, and can use only those while cut off. 20000 runs per row.
+
+| r | outage | overspends | mean underspend % | max pacing deviation % |
+|---|---|---|---|---|
+| 0.1 | no outage | 0 | 0.72 | 1.44 |
+| 0.1 | 60 s from 3300 s | 0 | 0.89 | 1.46 |
+| 0.1 | 60 s from 3500 s | 0 | 1.35 | 1.58 |
+| 0.1 | from 3300 s to the end | 0 | 7.29 | 7.29 |
+| 0.1 | 300 s from 1000 s | 0 | 0.52 | 7.87 |
+| 0.1 | from 3300 s to the end, p = 1 throughout | 0 | 0.00 | – |
+|  |  |  |  |  |
+| 1 | no outage | 0 | 0.00 | 1.45 |
+| 1 | 60 s from 3300 s | 0 | 0.00 | 1.45 |
+| 1 | 60 s from 3500 s | 0 | 0.00 | 1.45 |
+| 1 | from 3300 s to the end | 0 | 7.29 | 7.29 |
+| 1 | 300 s from 1000 s | 0 | 0.00 | 7.87 |
+| 1 | from 3300 s to the end, p = 1 throughout | 0 | 0.00 | – |
+|  |  |  |  |  |

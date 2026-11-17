@@ -53,6 +53,10 @@ def simulate_with_backstop(
     grant_share: float | None = None,
     grant_headroom: float | None = None,
     trace: list | None = None,
+    link_outage: tuple[float, float] | None = None,
+    silence_limit: float | None = None,
+    wallet: int | None = None,
+    wallet_share: float | None = 0.5,
 ) -> BackstopResult:
     """Token-level simulation. ``cap=False`` gives the same process without the backstop.
 
@@ -69,6 +73,18 @@ def simulate_with_backstop(
 
     ``trace``, if a list, receives one dict per control step for run 0 (what the
     center saw and decided); used to generate the Elixir golden tests.
+
+    ``link_outage`` (t0, t1): no message passes between the center and the clients
+    during [t0, t1). Clients keep the last p until their ``silence_limit`` (default
+    3 steps + delta_max), then stop. Failure reports queue and arrive at t1. The
+    center does not know and keeps deciding. (a): clients can use only the tokens
+    they already hold. (b): no grant arrives, so no bids; after t1 the next grant
+    replaces any old one, so a clean reconnect cannot spill.
+
+    ``wallet`` (version (a)): clients hold up to this many tokens in total, handed
+    out ahead of use and counted as used when handed out; each top-up gives at most
+    ``wallet_share`` of the allowance. None = one shared pool, tokens counted when
+    used (the original model; nothing is held, so a cut-off client cannot bid).
 
     Delivery delay (``scn.message_delay`` delta, planned bound ``message_delay_max``
     delta_max): clients use the p decided delta seconds ago, and the center's
@@ -103,6 +119,13 @@ def simulate_with_backstop(
     margin = scn.message_delay_max  # (b): a grant is usable for step - margin after it arrives
     leftover = np.zeros(n_runs, dtype=np.int64)  # (b): tokens of the last grant still usable
     stale = scn.message_age_limit is not None and scn.message_delay > scn.message_age_limit
+    if link_outage is not None and not instant:
+        raise ValueError("link_outage is simulated with immediate delivery only")
+    lo0, lo1 = (math.ceil(t / dt - 1e-9) for t in link_outage) if link_outage else (math.inf, math.inf)
+    silence = silence_limit if silence_limit is not None else 3 * dt + scn.message_delay_max
+    p_kept = np.zeros(n_runs)
+    held = np.zeros(n_runs, dtype=np.int64)  # (a) with wallets: tokens the clients hold
+    pending = np.zeros(n_runs, dtype=np.int64)  # failure reports queued during an outage
     fring = f_steps + 1
     ring_f = np.zeros((n_runs, fring), dtype=np.int64)  # failures per step
     ring_g = np.zeros((n_runs, ring), dtype=np.int64)  # (b): tokens granted per step
@@ -122,9 +145,16 @@ def simulate_with_backstop(
         seen = float(c * obs_spend[0])
         p = np.clip(controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0)
         ring_dec[:, i % hist] = p
+        cut = lo0 <= i < lo1  # the link is down during this step
+        p_clients = p
+        if i == lo0 - 1:
+            p_kept = p.copy()
+        if cut:
+            # the last received p runs until the silence limit, then p = 0
+            p_clients = p_kept if (i - (lo0 - 1)) * dt < silence else np.zeros(n_runs)
         if instant:
             def bids(lo, hi):  # noqa: E306  bids the clients want during [lo, hi) of this step
-                return rng.poisson(lam * p * dt)
+                return rng.poisson(lam * p_clients * dt)
         else:
             # clients use p_a during [0, m_frac) of this step and p_b after it
             p_a = ring_dec[:, (i - m_steps - 1) % hist] if i - m_steps - 1 >= 0 else 0.0
@@ -143,7 +173,29 @@ def simulate_with_backstop(
         elif mode == "reports":
             wanted = bids(0.0, dt)
             allowance = np.maximum(budget + fail_obs - used, 0)
-            tokens = np.minimum(wanted, allowance)
+            if wallet is None:
+                # one shared pool at the center: a cut-off client gets no token
+                tokens = np.zeros(n_runs, dtype=np.int64) if cut else np.minimum(wanted, allowance)
+            elif cut:
+                # cut off: only the tokens already held can be used
+                tokens = np.minimum(wanted, held)
+                held -= tokens
+            else:
+                # connected: clients use their wallet first and top it up on demand
+                tokens = np.minimum(wanted, held + allowance)
+                from_held = np.minimum(tokens, held)
+                new = tokens - from_held
+                held -= from_held
+                used += new
+                # then refill the wallets for the next step; tokens count as used when
+                # handed out. Near the end a top-up gives at most a share of what is left.
+                left = allowance - new
+                room = np.minimum(wallet - held, left)
+                if wallet_share is not None:
+                    room = np.minimum(room, np.ceil(wallet_share * left).astype(np.int64))
+                room = np.maximum(room, 0)
+                used += room
+                held += room
         else:
             allowance = np.maximum(budget - obs_spend - granted_unresolved, 0)
             if grant_share is not None:
@@ -153,7 +205,8 @@ def simulate_with_backstop(
             grant = np.minimum(grant, allowance)
             if instant:
                 wanted = bids(0.0, dt)
-                tokens = np.minimum(wanted, grant)
+                # cut off: the grant does not arrive, so no bid gets a token
+                tokens = np.zeros(n_runs, dtype=np.int64) if cut else np.minimum(wanted, grant)
             else:
                 dl = scn.message_delay
                 spill = max(0.0, dl - margin)  # the last grant is still usable until here
@@ -167,9 +220,12 @@ def simulate_with_backstop(
                 tokens = t_old + t_new
         blocked += wanted - tokens
         x = rng.binomial(tokens, r)  # realised
-        used += tokens
+        if not (mode == "reports" and cap and wallet is not None):
+            used += tokens  # (with wallets, tokens were counted when handed out)
         true_spend += x
-        if mode == "reports" or not cap:
+        if cut:
+            p_eff = p  # no reports arrive: the center cannot correct its exposure
+        elif mode == "reports" or not cap:
             p_eff = np.where(wanted > 0, p * tokens / np.maximum(wanted, 1), p)
         else:
             p_eff = p  # (b): blocked bids are not reported, exposure is not corrected
@@ -196,6 +252,12 @@ def simulate_with_backstop(
             np.maximum(inflight, 0.0, out=inflight)
         jf = i - f_steps
         reported = ring_f[:, jf % fring].copy() if jf >= 0 else np.zeros(n_runs, dtype=np.int64)
+        if cut:  # reports queue until the link is back
+            pending += reported
+            reported = np.zeros(n_runs, dtype=np.int64)
+        else:
+            reported += pending
+            pending[:] = 0
         fail_obs += reported
         if trace is not None:
             trace.append({"observed_spend": seen, "p": float(p[0]), "wanted": int(wanted[0]),
@@ -277,6 +339,7 @@ def main() -> None:
                     baseline = s["mean_underspend_pct"]
         md.append("|  |  |  |  |  |  |  |  |")
     md += ["", "![Cost of the cap against the failure-report delay, r = 0.1](token-cap-a.png)"]
+    md += _outage_section("reports", base, k, n)
     (out / "token-cap-a.md").write_text("\n".join(md) + "\n")
 
     # ---- version (b): no reports from clients, grants expire after one step
@@ -335,6 +398,7 @@ def main() -> None:
         md.append(f"| {r:g} | " + " | ".join(cells) + " |")
     md += ["", "Cells: mean underspend (max pacing deviation).", "",
            "![Underspend against the grant share s](token-cap-b-share.png)"]
+    md += _outage_section("grants", base, k, n)
     (out / "token-cap-b.md").write_text("\n".join(md) + "\n")
     _fig_b_compare(compare, out / "token-cap-b-compare.png")
     _fig_b_share(share_pts, out / "token-cap-b-share.png")
@@ -386,6 +450,54 @@ def _fig_b_compare(compare, path):
     fig.tight_layout(rect=(0, 0.08, 1, 1))
     fig.savefig(path, dpi=140)
     plt.close(fig)
+
+
+class _FullThrottle:
+    """Adversarial controller: p = 1 always; only the cap stands between it and overspend."""
+
+    def reset(self, n):
+        pass
+
+    def decide(self, t, spend, exposure, inflight):
+        return np.ones(spend.shape)
+
+
+def _outage_section(mode: str, base: Scenario, k: float, n: int) -> list[str]:
+    """Results lines: the cap when the link between center and clients is lost."""
+    outages = [
+        ("no outage", None),
+        ("60 s from 3300 s", (3300.0, 3360.0)),
+        ("60 s from 3500 s", (3500.0, 3560.0)),
+        ("from 3300 s to the end", (3300.0, 3600.0)),
+        ("300 s from 1000 s", (1000.0, 1300.0)),
+    ]
+    if mode == "reports":
+        kw = {"failure_delay": 5.0, "wallet": 200}
+        setting = ("failures reported after 5 s; clients hold wallets of up to 200 tokens in "
+                   "total, topped up on demand, and can use only those while cut off")
+    else:
+        kw = {"grant_share": 0.5}
+        setting = "grant share 0.5; while cut off no grant arrives"
+    md = ["", "## Lost connection between center and clients", "",
+          f"No message passes either way during the outage; clients keep the last p for their "
+          f"silence limit (15 s), then stop. Plain pacing with the cap, {setting}. "
+          f"{n} runs per row.", "",
+          "| r | outage | overspends | mean underspend % | max pacing deviation % |",
+          "|---|---|---|---|---|"]
+    for r in (0.1, 1.0):
+        scn = replace(base, request_rate=k / r, realization=r)
+        for name, lo in outages:
+            res = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=k), n,
+                                         seed=8, mode=mode, link_outage=lo, **kw)
+            s = res.summary(scn.budget)
+            md.append(f"| {r:g} | {name} | {int(res.overspent.sum())} | "
+                      f"{s['mean_underspend_pct']:.2f} | {s['mean_max_pace_dev_pct']:.2f} |")
+        res = simulate_with_backstop(scn, _FullThrottle(), n, seed=8, mode=mode,
+                                     link_outage=(3300.0, 3600.0), **kw)
+        md.append(f"| {r:g} | from 3300 s to the end, p = 1 throughout | {int(res.overspent.sum())} | "
+                  f"{res.summary(scn.budget)['mean_underspend_pct']:.2f} | – |")
+        md.append("|  |  |  |  |  |")
+    return md
 
 
 def _fig_b_share(share_pts, path):

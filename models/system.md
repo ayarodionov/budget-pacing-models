@@ -432,7 +432,7 @@ usually fast can still drop for a while. What each model needs to stay safe:
 | What breaks | Probabilistic controller | Cap (a) | Cap (b) |
 |---|---|---|---|
 | center → clients lost | clients keep the last p until their silence limit L: plan for it with `max_silence` | a client spends at most its wallet: safe | no grants arrive: safe |
-| burst of old messages after reconnecting | dropped by the age check | safe (tokens are counted) | old grants: dropped by the age check, otherwise unsafe |
+| old messages after reconnecting | dropped by the age check | safe (tokens are counted) | a clean reconnect is safe (each new grant replaces the old one); a slow backlog needs the age check |
 | clients → center lost | nothing needed | budget stays held: safe (underspend) | safe |
 | budget feed stalls | halt on a stale feed, otherwise a runaway near the end | safe (does not use the feed) | halt on a stale feed, otherwise unsafe |
 | center restarts | clients stop after L; risk used must survive | safe **only if the token counts survive** | safe only if the grant window survives |

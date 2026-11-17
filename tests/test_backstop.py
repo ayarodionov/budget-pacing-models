@@ -142,3 +142,34 @@ def test_age_limit_stops_capped_clients_too():
     scn = replace(SMALL, message_delay=4.0, message_age_limit=1.0)
     res = simulate_with_backstop(scn, _FixedP(0.5), 200, seed=2, mode="grants", grant_share=0.5)
     assert res.final_spend.max() == 0
+
+
+# --------------------------------------------------------------------------- lost link
+@pytest.mark.parametrize("mode", ["reports", "grants"])
+@pytest.mark.parametrize("outage", [(300.0, 360.0), (450.0, 600.0)])
+@pytest.mark.parametrize("r", [0.1, 1.0])
+def test_caps_never_overspend_when_the_link_is_lost(mode, outage, r):
+    scn = replace(SMALL, request_rate=10.0 / r, realization=r)
+    kw = {"grant_share": 0.5} if mode == "grants" else {"failure_delay": 5.0, "wallet": 20}
+    for ctl in (_FullThrottle(), NaiveController(scn.center_view(), prior_mean=10.0)):
+        res = simulate_with_backstop(scn, ctl, 1000, seed=3, mode=mode, link_outage=outage, **kw)
+        assert res.final_spend.max() <= scn.budget
+
+
+def test_wallets_change_nothing_without_an_outage():
+    scn = replace(SMALL, realization=0.1, request_rate=100.0)
+    a = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=10.0), 500, 5.0, seed=4)
+    b = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=10.0), 500, 5.0, seed=4,
+                               wallet=30)
+    np.testing.assert_array_equal(a.final_spend, b.final_spend)
+
+
+def test_cut_off_clients_spend_only_their_wallets():
+    """With p = 1 and the link lost for good at 50 s, (a) spends at most what was held."""
+    scn = replace(SMALL, realization=1.0, request_rate=1.0)
+    lost = dict(link_outage=(50.0, 600.0))
+    pool = simulate_with_backstop(scn, _FullThrottle(), 300, 5.0, seed=5, **lost)
+    wallets = simulate_with_backstop(scn, _FullThrottle(), 300, 5.0, seed=5, wallet=7, **lost)
+    extra = wallets.final_spend - pool.final_spend
+    assert extra.max() <= 7
+    assert extra.mean() > 5

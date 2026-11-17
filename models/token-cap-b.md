@@ -177,12 +177,17 @@ Version (b) is safe through an outage only under conditions about time.
 stop when their current grant expires, within one period: the fastest stop of
 all models.
 
-**The reconnect is the danger.** Grants queued during the outage may arrive late,
-in a burst. A client measures a grant's validity from when it *arrives*, so a
-late grant could be used after its period has ended, as spend the center no
-longer counts. With a 4 s delay the center did not plan for, 94 % of runs
-overspent when every bid is charged ([system.md](system.md) §6). Three
-conditions keep (b) safe:
+**A clean reconnect is safe; a slow one is the danger.** Grants queued during
+the outage arrive in a burst when the link returns. A client measures a grant's
+validity from when it *arrives*, so a stale grant could in principle be used
+after its period has ended. But each new grant *replaces* the one the client
+holds, and the next one arrives at the start of the next period, so after a
+clean reconnect a stale grant is used only within its own period. The danger
+is a link that comes back slow, delivering every grant late for a while (a
+backlog draining): then each grant runs into the next period, as spend the
+center no longer counts. With a 4 s delay the center did not plan for, 94 % of
+runs overspent when every bid is charged ([system.md](system.md) §6). Three
+conditions keep (b) safe in every case:
 
 1. the **age check** drops grants older than δ_max + clock skew, which needs
    clocks synchronised within a known skew;
@@ -207,9 +212,21 @@ are lost; the controller raises p for the clients still connected.
 
 If overspend must be impossible through outages, use (a), with small wallets
 near the end and a durable store. (b) is a good choice when clients cannot send
-reports, provided their clocks are synchronised and the age check is on. These
-points follow from the rules and are checked by the Elixir tests; the token-cap
-simulation does not model a link outage yet, so there are no measured costs.
+reports, provided their clocks are synchronised and the age check is on.
+
+**Measured** (default scenario, plain pacing with the cap, grant share 0.5;
+20,000 runs per row; full table in
+[results/token-cap-b.md](../results/token-cap-b.md)): no run overspends in any
+outage, including clients bidding at p = 1 through an outage that lasts to the
+end. A clean outage costs only the bids that could not be made:
+
+| underspend | no outage | 60 s from 3,300 s | 60 s from 3,500 s | from 3,300 s to the end | 300 s from 1,000 s |
+|---|---|---|---|---|---|
+| r = 0.1 | 3.63 % | 4.26 % | 4.26 % | 8.01 % | 3.10 % |
+| r = 1 | 0.01 % | 0.01 % | 0.14 % | 7.57 % | 0.01 % |
+
+The simulated reconnect is clean (grants arrive on time again at once); a slow
+backlog is the delivery-delay case measured in [system.md](system.md) §6.
 
 ## 7. Choosing between (a) and (b): recommendations
 

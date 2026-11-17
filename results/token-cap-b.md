@@ -38,3 +38,24 @@ Each step the center grants tokens that expire at the end of the step, at most A
 Cells: mean underspend (max pacing deviation).
 
 ![Underspend against the grant share s](token-cap-b-share.png)
+
+## Lost connection between center and clients
+
+No message passes either way during the outage; clients keep the last p for their silence limit (15 s), then stop. Plain pacing with the cap, grant share 0.5; while cut off no grant arrives. 20000 runs per row.
+
+| r | outage | overspends | mean underspend % | max pacing deviation % |
+|---|---|---|---|---|
+| 0.1 | no outage | 0 | 3.63 | 3.63 |
+| 0.1 | 60 s from 3300 s | 0 | 4.26 | 4.26 |
+| 0.1 | 60 s from 3500 s | 0 | 4.26 | 4.26 |
+| 0.1 | from 3300 s to the end | 0 | 8.01 | 8.01 |
+| 0.1 | 300 s from 1000 s | 0 | 3.10 | 8.02 |
+| 0.1 | from 3300 s to the end, p = 1 throughout | 0 | 0.01 | – |
+|  |  |  |  |  |
+| 1 | no outage | 0 | 0.01 | 1.44 |
+| 1 | 60 s from 3300 s | 0 | 0.01 | 1.50 |
+| 1 | 60 s from 3500 s | 0 | 0.14 | 1.46 |
+| 1 | from 3300 s to the end | 0 | 7.57 | 7.57 |
+| 1 | 300 s from 1000 s | 0 | 0.01 | 8.15 |
+| 1 | from 3300 s to the end, p = 1 throughout | 0 | 0.00 | – |
+|  |  |  |  |  |
