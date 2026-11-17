@@ -181,6 +181,26 @@ What the results show:
       including the final creep towards B, also reach the clients 30 s late.
 
     ![Underspend against the delivery delay of p](../results/message_delay.png)
+12. **A delivery delay far larger than planned is a runaway; three defences stop
+    it.** With δ = 2 min and δ_max = 0, every run overspends, on average by
+    9,700 units (about 2 × B): the controller reads the long silence as a tiny k
+    and pushes p to 1 ([system.md](system.md) §6). Default scenario, ε = 10⁻³,
+    40 000 runs per row:
+
+    | δ = 2 min, unplanned | runs that overspend | worst overspend | underspend |
+    |---|---|---|---|
+    | no defence | 100 % | 10,383 units | 0 % |
+    | age check (clients ignore p older than 1 s) | 0 | 0 | 100 % (stopped) |
+    | halt when the measured delay exceeds plan | 0 | 0 | 99.7 % (stopped) |
+    | rise limit ×2 per d | 50 % | 534 units (11 % of B) | 0.06 % |
+    | rise limit ×1.5 per d | 63 % | 61 units (1.2 % of B) | 0.07 % |
+    | rise limit ×1.5 + halt | 0 | 0 | 99.7 % (stopped) |
+
+    The age check and the halt stop the campaign and leave the decision to an
+    operator. The rise limit keeps it running and bounds the damage without
+    preventing overspend. When nothing is wrong, a rise limit of ×1.5 costs
+    nothing measurable: 0.40 % underspend as without it, and 0.38 % with a 10×
+    too low initial guess of k.
 
 ## 4. Limits
 

@@ -50,6 +50,11 @@ defmodule PacingController do
     * `:endgame` - finish the planned spend this many seconds before T (default 0)
     * `:message_delay_max` - largest delay, in seconds, before a new p reaches the
       clients (default 0: immediately)
+    * `:max_rise` - p may grow by at most this factor per `:rise_period` seconds
+      (default: the spend delay), relative to the larger of the last p and the
+      first p; decreases are not limited (default nil: no limit). A guard against
+      a delay the center does not know about, which makes the controller mistake
+      "no spend yet" for "low k" and push p up. 1.5 is a sensible value.
     * `:broadcast_threshold` - send p only when it changes by more than this
       fraction (default nil: send every period)
     * `:known_rate` - k if known exactly (oracle; default nil)
@@ -76,6 +81,9 @@ defmodule PacingController do
     eta_period: 5.0,
     endgame: 0.0,
     message_delay_max: 0.0,
+    max_rise: nil,
+    rise_period: nil,
+    p_first: nil,
     flat_after_data: true,
     math: PacingMath,
     # state
@@ -169,7 +177,7 @@ defmodule PacingController do
     dt = c.step
     tail = fn exposure -> tail(c, remaining, alpha, beta, exposure) end
 
-    p = pace(c, t, remaining - k_est * w, k_est)
+    {p, c} = rise_cap(c, pace(c, t, remaining - k_est * w, k_est))
     q0 = tail.(w)
     allow = c.eta_step * max(c.eps - c.risk_used, 0.0)
     q1 = tail.(w + p * dt)
@@ -224,6 +232,15 @@ defmodule PacingController do
       end
 
     {alpha, beta, alpha / beta}
+  end
+
+  # limit how fast p may grow; the first p (from the prior) is not limited
+  defp rise_cap(%{max_rise: nil} = c, p), do: {p, c}
+  defp rise_cap(%{p_first: nil} = c, p), do: {p, %{c | p_first: p}}
+
+  defp rise_cap(c, p) do
+    period = c.rise_period || if(c.delay > 0, do: c.delay, else: c.step)
+    {min(p, max(c.p_last, c.p_first) * :math.pow(c.max_rise, c.step / period)), c}
   end
 
   defp pace(c, t, to_spend, k_est) do

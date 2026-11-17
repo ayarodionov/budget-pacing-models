@@ -168,6 +168,14 @@ k, so pacing can aim straight.
   step, and the **risk check alone** sets p. This is the creep phase: p shrinks
   as the remaining budget gets close to the in-flight spend. Without an end-game
   the same thing happens in the last few steps before T.
+- **No spend where some was expected.** If spend stays invisible for longer than
+  the controller expects, for example because of a delivery delay of p that
+  nobody planned for, k̂ falls and pacing pushes p up, possibly to 1. The
+  optional rise limit (`max_rise`) caps that: p may grow by at most ×1.5 per
+  spend delay d, relative to the larger of the last p and the first. It costs
+  nothing measurable when nothing is wrong, and it cuts the worst overspend of a
+  2-minute unplanned delay from 2 × B to 1.2 % of B (11 % with ×2)
+  ([models/system.md](models/system.md) §6).
 
 ### The end-game
 

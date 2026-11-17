@@ -51,6 +51,16 @@ HEADER = ("| strategy | P(overspend) | 95% upper bound | mean overspend, units (
           "|---|---|---|---|---|---|---|")
 
 
+HEADER_OVER = ("| setting | P(overspend) | mean overspend, units (if over) | worst overspend, units | "
+               "mean underspend % | max pacing deviation % |\n|---|---|---|---|---|---|")
+
+
+def fmt_row_over(name: str, s: dict, over: np.ndarray) -> str:
+    p = f"{s['overspend_prob']:.2e}" if s["overspend_prob"] else "0"
+    return (f"| {name} | {p} | {s['mean_overspend_units_when_over']:.1f} | {max(0.0, float(over.max())):.0f} | "
+            f"{s['mean_underspend_pct']:.3f} | {s['mean_max_pace_dev_pct']:.2f} |")
+
+
 HEADER_MSG = ("| setting | P(overspend) | 95% upper bound | mean underspend % | p95 underspend % | "
               "max pacing deviation % | p broadcasts per hour |\n|---|---|---|---|---|---|---|")
 
@@ -223,11 +233,33 @@ def main() -> None:
         under_m.append(s["mean_underspend_pct"])
         md.append(fmt_row(f"delta = delta_max = {dl:g} s", s))
     md.append("|  |  |  |  |  |  |  |")
-    for dl in (1.0, 5.0, 10.0, 30.0):
+    for dl in (1.0, 5.0, 10.0, 30.0, 120.0):
         sc = replace(scn, message_delay=dl)
         s = simulate(sc, bayes(sc, eps), n, seed=11).summary(sc.budget)
         md.append(fmt_row(f"delta = {dl:g} s, ignored (delta_max = 0)", s))
     md += ["", img("message_delay.png", "Underspend against the delivery delay of p"), ""]
+
+    # ---- E12: defences against a large delivery delay nobody planned for
+    md += ["## 12. Defences against an unplanned delivery delay (delta = 120 s, delta_max = 0)", "",
+           "Age check: clients ignore a p older than 1 s. Rise limit: p may grow by at most "
+           "x2 (or x1.5) per d. Halt: the center measures the delay from heartbeats and sends "
+           "p = 0 once it exceeds delta_max + 5 s. The last rows show the rise limit's cost "
+           "when nothing is wrong.", "", HEADER_OVER]
+    late = replace(scn, message_delay=120.0)
+    rows12 = [
+        ("no defence", late, {}, None),
+        ("age check (limit 1 s)", replace(late, message_age_limit=1.0), {}, None),
+        ("rise limit x2 per d", late, {"max_rise": 2.0}, None),
+        ("rise limit x1.5 per d", late, {"max_rise": 1.5}, None),
+        ("halt on measured delay", late, {}, 5.0),
+        ("rise limit x1.5 + halt", late, {"max_rise": 1.5}, 5.0),
+        ("no delay, rise limit x1.5 (cost)", scn, {"max_rise": 1.5}, None),
+        ("no delay, rise limit x1.5, guess 10x too low", scn, {"max_rise": 1.5, "prior_mean": k / 10}, None),
+    ]
+    for name, sc, kw, halt in rows12:
+        res = simulate(sc, bayes(sc, eps, **kw), n, seed=12, halt_on_lag=halt)
+        md.append(fmt_row_over(name, res.summary(sc.budget), res.final_spend - sc.budget))
+    md.append("")
     md.append(f"_Total compute: {time.time() - t_start:.0f} s._")
     (OUT / "probabilistic.md").write_text("\n".join(md) + "\n")
 

@@ -395,6 +395,37 @@ in flight. Ignoring a delivery delay (δ_max = 0 while δ > 0) breaks the
 guarantee quickly: in the default scenario with ε = 10⁻³, a 1 s delay doubles
 the overspend rate, a 5 s delay makes it 2.3·10⁻² and a 10 s delay 1.3·10⁻¹.
 
+**When the delay is far larger than planned.** Beyond about one spend delay
+(d = 30 s), an unplanned δ is not just inaccurate but unstable:
+
+1. The center sends a small p. For d + δ seconds it sees no spend at all.
+2. It believes spend shows up after d, so it reads the silence as a tiny k
+   ("I bid and nothing happened"). Pacing and the risk check then push p to 1.
+3. Those p = 1 messages reach the clients δ later, and the budget goes in
+   seconds.
+4. The stop that follows is also δ late, so clients keep bidding at p = 1 for
+   another δ.
+
+With δ = 2 min, every run overspends, on average by 2 × B
+([probabilistic.md](probabilistic.md) §3, item 12). The existing safeguards do
+not catch it: a steady backlog still delivers a message with a newer `seq` every
+period, so neither the `seq` rule nor the silence rule fires.
+
+Defences, all implemented in the Python simulation and in Elixir:
+
+| Defence | Where | What it does | δ = 2 min unplanned | Cost when nothing is wrong |
+|---|---|---|---|---|
+| **Age check** | clients | Messages carry their send time (wall clock). A client ignores one older than δ_max + clock skew, so it stops on silence. Needs clocks synchronised within a known skew. | no overspend; campaign stops | none |
+| **Halt on measured delay** | center | Clients report the last `seq` they applied in heartbeats. The center knows when it sent each `seq`, so it bounds the delay from below with its own clock (no clock sync). Above δ_max + allowance it sends p = 0 and raises an alarm. Needs heartbeats, so the token-cap modes. | no overspend; campaign stops | none |
+| **Rise limit** | controller | p may grow by at most ×1.5 per d. | overspend still frequent, but the worst case falls from 2 × B to 1.2 % of B (11 % with ×2); campaign continues | none measurable, even with a 10× wrong guess of k |
+| **Token cap (a)** | cap | Counts tokens, not time. | never overspends; spends B in a burst | the cap's usual cost |
+
+The age check and the halt turn an unexpected delay into a stopped campaign and
+an alarm: safe, but someone must act (`PacingCenter.resume/1`, or fix the delay
+and plan for it). The rise limit keeps the campaign running and bounds the
+damage, but does not prevent overspend on its own. Use the rise limit (×1.5) always,
+and the age check or the halt wherever a broker or a polling path can back up.
+
 **Relays.** A broker, or a forwarding process on each node, may sit between the
 center and the clients. It must hold no state of its own and must not invent
 messages. In particular it must never re-send an old p as if it were new,

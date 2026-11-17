@@ -45,6 +45,8 @@ class Scenario:
     unit_cost: float = 1.0  # c, budget units per realised token (known to center)
     message_delay: float = 0.0  # delta, seconds until a new p reaches the clients
     message_delay_max: float = 0.0  # delta_max >= delta, the bound the center plans with
+    # clients ignore a p older than this (needs synchronised clocks); None = no check
+    message_age_limit: float | None = None
 
     @property
     def spend_rate_at_p1(self) -> float:
@@ -159,11 +161,17 @@ def simulate(
     seed: int = 0,
     true_rates: np.ndarray | None = None,
     keep: int = 0,
+    halt_on_lag: float | None = None,
 ) -> SimResult:
     """Run ``n_runs`` independent replications of one campaign in parallel.
 
     ``true_rates`` optionally gives each run its own k = lambda * r (used to test the
     Bayesian guarantee with k drawn from the prior). ``keep`` trajectories are stored.
+
+    ``halt_on_lag`` (seconds, an allowance): the center measures the delivery delay
+    from heartbeats (clients report the last p they applied; the first report comes
+    one step after the first p arrives). If the measured delay exceeds
+    ``message_delay_max`` + allowance, the center sends p = 0 from then on.
     """
     rng = np.random.default_rng(seed)
     k = (
@@ -193,11 +201,15 @@ def simulate(
     traj_p = np.zeros((keep, n_steps))
 
     c = scn.unit_cost
+    stale = scn.message_age_limit is not None and scn.message_delay > scn.message_age_limit
+    halt_step = _halt_step(scn, halt_on_lag)
     controller.reset(n_runs)
     for i in range(n_steps):
         p = np.clip(
             controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0
         )
+        if i >= halt_step:
+            p = np.zeros(n_runs)
         ring_p[:, i % hist] = p
         if scn.message_delay == 0:
             x = rng.poisson(k * p * dt)
@@ -207,7 +219,8 @@ def simulate(
                 return ring_p[:, j % hist] if j >= 0 else 0.0
 
             exposure = decided(i - m_steps - 1) * m_frac + decided(i - m_steps) * (dt - m_frac)
-            x = rng.poisson(k * exposure)
+            # clients that check the age of p ignore one that arrives too late
+            x = np.zeros(n_runs, dtype=np.int64) if stale else rng.poisson(k * exposure)
         true_spend += x
         ring_x[:, i % ring] = x
         inflight += p * dt
@@ -235,6 +248,16 @@ def simulate(
         traj_spend=traj_spend,
         traj_p=traj_p,
     )
+
+
+def _halt_step(scn: Scenario, allowance: float | None) -> float:
+    """Step from which a center that measures the delivery delay sends p = 0."""
+    if allowance is None or scn.message_delay <= scn.message_delay_max + allowance:
+        return math.inf
+    # the first p arrives after delta; the next heartbeat, one step later, reports it
+    # late enough to show that the delay exceeds delta_max + allowance
+    detect = scn.message_delay_max + allowance + scn.step
+    return math.ceil(detect / scn.step)
 
 
 def simulate_clients_once(

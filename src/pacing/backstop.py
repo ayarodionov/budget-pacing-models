@@ -102,6 +102,7 @@ def simulate_with_backstop(
     ring_dec = np.zeros((n_runs, hist))  # decided p, for the p clients actually use
     margin = scn.message_delay_max  # (b): a grant is usable for step - margin after it arrives
     leftover = np.zeros(n_runs, dtype=np.int64)  # (b): tokens of the last grant still usable
+    stale = scn.message_age_limit is not None and scn.message_delay > scn.message_age_limit
     fring = f_steps + 1
     ring_f = np.zeros((n_runs, fring), dtype=np.int64)  # failures per step
     ring_g = np.zeros((n_runs, ring), dtype=np.int64)  # (b): tokens granted per step
@@ -132,6 +133,8 @@ def simulate_with_backstop(
             def bids(lo, hi):  # noqa: E306
                 a = max(0.0, min(hi, m_frac) - lo)
                 b = max(0.0, hi - max(lo, m_frac))
+                if stale:  # clients ignore a p (and grant) that arrives too late
+                    return np.zeros(n_runs, dtype=np.int64)
                 return rng.poisson(lam * (p_a * a + p_b * b))
         grant = None
         if not cap:

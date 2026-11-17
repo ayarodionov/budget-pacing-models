@@ -70,6 +70,8 @@ class _Pacer:
         prior_shape: float = 2.0,
         endgame_time: float = 0.0,
         flat_after_data: bool = True,
+        max_rise: float | None = None,
+        rise_period: float | None = None,
     ):
         """prior_mean      the center's guess of k = lambda * r (realised tokens per second
                         at p = 1; the spend rate is c * k * p)
@@ -81,6 +83,12 @@ class _Pacer:
                         (Garwood) confidence bound, so a wrong guess cannot bias the risk
                         estimate downwards. False = textbook conjugate Bayes throughout
                         (exact guarantee only on average over the prior).
+        max_rise        p may grow by at most this factor per ``rise_period`` seconds
+                        (default: the spend delay d), relative to the larger of the
+                        last p and the first p. Decreases are not limited. A guard
+                        against a delay the center does not know about: the controller
+                        then mistakes "no spend yet" for "low k" and pushes p up.
+                        None = no limit.
         """
         self.view = view
         self.a0 = float(prior_shape)
@@ -88,6 +96,25 @@ class _Pacer:
         self.endgame_time = float(endgame_time)
         self.flat_after_data = flat_after_data
         self.c = float(view.unit_cost)
+        self.max_rise = max_rise
+        self.rise_period = float(rise_period or view.delay or view.step)
+        self._first = None
+        self._prev = None
+
+    def _rise_cap(self, p):
+        """Limit how fast p may grow (``max_rise``); the first p is not limited."""
+        if self.max_rise is None:
+            return p
+        if self._first is None:
+            self._first = p.copy()
+            return p
+        ref = np.maximum(self._prev, self._first)
+        return np.minimum(p, ref * self.max_rise ** (self.view.step / self.rise_period))
+
+    def _remember(self, p):
+        if self.max_rise is not None:
+            self._prev = np.array(p, dtype=float, copy=True)
+        return p
 
     def _events(self, observed_spend):
         """Visible spend in budget units -> (realised tokens seen, budget left in tokens).
@@ -98,7 +125,8 @@ class _Pacer:
         return n, self.view.budget_events - n
 
     def reset(self, n_runs: int) -> None:
-        pass
+        self._first = None
+        self._prev = None
 
     def _posterior(self, observed_spend, observed_exposure):
         alpha = self.a0 + observed_spend
@@ -133,7 +161,8 @@ class NaiveController(_Pacer):
     def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
         observed_spend, remaining = self._events(observed_spend)
         _, _, k_est = self._posterior(observed_spend, observed_exposure)
-        return np.where(remaining > 0, self._pace(t, remaining, k_est), 0.0)
+        p = self._rise_cap(self._pace(t, remaining, k_est))
+        return self._remember(np.where(remaining > 0, p, 0.0))
 
 
 class PluginController(_Pacer):
@@ -144,7 +173,7 @@ class PluginController(_Pacer):
     def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
         observed_spend, remaining = self._events(observed_spend)
         _, _, k_est = self._posterior(observed_spend, observed_exposure)
-        p = self._pace(t, remaining - k_est * inflight_exposure, k_est)
+        p = self._rise_cap(self._pace(t, remaining - k_est * inflight_exposure, k_est))
         dt = self.view.step
 
         def ok(pp):
@@ -160,7 +189,7 @@ class PluginController(_Pacer):
                 )
                 <= self.eps,
             )
-        return p
+        return self._remember(p)
 
 
 class BayesRiskController(_Pacer):
@@ -210,6 +239,7 @@ class BayesRiskController(_Pacer):
         self.broadcasts = np.zeros(0, dtype=np.int64)
 
     def reset(self, n_runs):
+        super().reset(n_runs)
         self.risk_used = np.zeros(n_runs)
         self.p_last = np.zeros(n_runs)  # clients start with p = 0 (nothing sent yet)
         self.broadcasts = np.zeros(n_runs, dtype=np.int64)
@@ -227,7 +257,7 @@ class BayesRiskController(_Pacer):
         dt = self.view.step
         w = inflight_exposure
 
-        p = self._pace(t, remaining - k_est * w, k_est)
+        p = self._rise_cap(self._pace(t, remaining - k_est * w, k_est))
         q0 = self._tail(remaining, alpha, beta, w)  # risk already locked in
         allow = self.eta_step * np.clip(self.eps - self.risk_used, 0.0, None)
         q1 = self._tail(remaining, alpha, beta, w + p * dt)
@@ -259,4 +289,4 @@ class BayesRiskController(_Pacer):
         self.broadcasts += send
         self.p_last = p
         self.risk_used += np.clip(q1 - q0, 0.0, None)
-        return p
+        return self._remember(p)

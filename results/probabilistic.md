@@ -154,7 +154,23 @@ A new p reaches the clients delta seconds after the center decides it (a broker,
 | delta = 5 s, ignored (delta_max = 0) | 2.26e-02 | 2.4e-02 | 3.4 | 0.278 | 0.500 | 1.64 |
 | delta = 10 s, ignored (delta_max = 0) | 1.33e-01 | 1.4e-01 | 4.6 | 0.170 | 0.400 | 3.02 |
 | delta = 30 s, ignored (delta_max = 0) | 5.09e-01 | 5.1e-01 | 8.2 | 0.068 | 0.300 | 19.23 |
+| delta = 120 s, ignored (delta_max = 0) | 1.00e+00 | 1.0e+00 | 9702.3 | 0.000 | 0.000 | 283.51 |
 
 ![Underspend against the delivery delay of p](message_delay.png)
 
-_Total compute: 637 s._
+## 12. Defences against an unplanned delivery delay (delta = 120 s, delta_max = 0)
+
+Age check: clients ignore a p older than 1 s. Rise limit: p may grow by at most x2 (or x1.5) per d. Halt: the center measures the delay from heartbeats and sends p = 0 once it exceeds delta_max + 5 s. The last rows show the rise limit's cost when nothing is wrong.
+
+| setting | P(overspend) | mean overspend, units (if over) | worst overspend, units | mean underspend % | max pacing deviation % |
+|---|---|---|---|---|---|
+| no defence | 1.00e+00 | 9703.6 | 10383 | 0.000 | 283.54 |
+| age check (limit 1 s) | 0 | 0.0 | 0 | 100.000 | 100.00 |
+| rise limit x2 per d | 4.99e-01 | 7.1 | 534 | 0.055 | 68.63 |
+| rise limit x1.5 per d | 6.31e-01 | 13.6 | 61 | 0.068 | 26.64 |
+| halt on measured delay | 0 | 0.0 | 0 | 99.722 | 99.72 |
+| rise limit x1.5 + halt | 0 | 0.0 | 0 | 99.722 | 99.72 |
+| no delay, rise limit x1.5 (cost) | 7.75e-04 | 2.5 | 8 | 0.402 | 1.22 |
+| no delay, rise limit x1.5, guess 10x too low | 9.25e-04 | 2.7 | 9 | 0.382 | 8.84 |
+
+_Total compute: 657 s._

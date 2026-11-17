@@ -21,12 +21,16 @@ defmodule PacingCenter do
   Clients join the `:pg` group `{:pacing, campaign}` (see `subscribe/2`). Every
   period every member gets one of
 
-      {:pacing_p, campaign, epoch, seq, p}         # new p
-      {:pacing_keepalive, campaign, epoch, seq}    # p unchanged (broadcast threshold)
+      {:pacing_p, campaign, epoch, seq, p, sent_at}         # new p
+      {:pacing_keepalive, campaign, epoch, seq, sent_at}    # p unchanged (broadcast threshold)
 
   and in `:grants` mode each live lease also gets
 
-      {:pacing_grant, campaign, epoch, seq, tokens, valid_ms}
+      {:pacing_grant, campaign, epoch, seq, tokens, valid_ms, sent_at}
+
+  `sent_at` is the center's wall-clock time in ms. Clients ignore a message older
+  than `max_age_ms` (δ_max + `clock_skew_ms`, sent in `hello/1`), so a delay much
+  larger than planned makes them stop instead of acting on an old p.
 
   `epoch` identifies this run of the center (it grows across restarts); `seq`
   grows by one per period. Clients apply a message only if `{epoch, seq}` is newer
@@ -61,7 +65,20 @@ defmodule PacingCenter do
 
   Ignoring a real delivery delay breaks the guarantees: in the simulations a 4 s
   delay (5 s period) made 1.4 % of runs overspend with ε = 10⁻³, and 94 % in
-  version (b) when every bid is charged.
+  version (b) when every bid is charged. A delay of minutes that nobody planned
+  for is worse: the controller mistakes "no spend yet" for "low k", pushes p to 1,
+  and spends several times the budget. Three defences:
+
+    * **Age check (clients).** Messages carry `sent_at`; clients drop those older
+      than `max_age_ms` and stop on silence. Needs clocks synchronised within
+      `clock_skew_ms`.
+    * **Lag measurement (center).** In the token-cap modes clients report the
+      last `seq` they applied in every heartbeat. The center knows when it sent
+      each `seq`, so it can bound the delay from below with its own clock only. If
+      that exceeds δ_max + `lag_allowance_ms`, the center *halts*: it sends p = 0
+      and no grants until `resume/1`, and calls `on_alarm`.
+    * **Rise limit (controller).** `max_rise` in the controller options limits
+      how fast p may grow, which bounds the damage of an undetected delay.
 
   The client's side (stop on silence, local lease expiry) is in `PacingClient`.
 
@@ -85,6 +102,14 @@ defmodule PacingCenter do
     * `:grant_margin_ms` - default max(`step_ms / 10`, `message_delay_max_ms`); must
       cover the delivery delay of a grant plus clock drift, so it may not be smaller
       than `message_delay_max_ms`
+    * `:clock_skew_ms` - allowed difference between the center's and the clients'
+      wall clocks, added to δ_max for the age check (default 1000)
+    * `:lag_allowance_ms` - how much the measured delay may exceed δ_max before the
+      center halts (default `step_ms`)
+    * `:on_alarm` - `fn {:lag, client_id, lag_ms} -> any end`, called once when the
+      center halts (default: log an error)
+    * `:wall_clock` - zero-arity function returning wall-clock ms for `sent_at`
+      (default `System.os_time(:millisecond)`)
     * `:authenticate` - `fn client_id, credentials -> boolean end`
     * `:clock` - zero-arity function returning ms (default monotonic time)
     * `:epoch` - default `System.os_time(:microsecond)` at start
@@ -144,6 +169,9 @@ defmodule PacingCenter do
   @doc "Internal state, for monitoring and tests."
   def info(center), do: GenServer.call(center, :info)
 
+  @doc "Leave the halted state (after a lag alarm) and send p again."
+  def resume(center), do: GenServer.call(center, :resume)
+
   # ------------------------------------------------------------------ server
 
   @impl true
@@ -195,6 +223,12 @@ defmodule PacingCenter do
       lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, 3 * step_ms),
       grant_margin_ms: grant_margin_ms,
       message_delay_max_ms: dmax_ms,
+      max_age_ms: dmax_ms + Keyword.get(opts, :clock_skew_ms, 1_000),
+      lag_allowance_ms: Keyword.get(opts, :lag_allowance_ms, step_ms),
+      on_alarm: Keyword.get(opts, :on_alarm, &log_alarm/1),
+      wall_clock: Keyword.get(opts, :wall_clock, fn -> System.os_time(:millisecond) end),
+      sent: %{},
+      halted: nil,
       authenticate: Keyword.get(opts, :authenticate, fn _, _ -> true end),
       clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
       epoch: Keyword.get(opts, :epoch, System.os_time(:microsecond)),
@@ -224,6 +258,7 @@ defmodule PacingCenter do
       mode: s.mode,
       step_ms: s.step_ms,
       message_delay_max_ms: s.message_delay_max_ms,
+      max_age_ms: s.max_age_ms,
       epoch: s.epoch,
       seq: s.seq,
       p: s.p
@@ -233,6 +268,8 @@ defmodule PacingCenter do
   end
 
   def handle_call(:info, _from, s), do: {:reply, s, s}
+
+  def handle_call(:resume, _from, s), do: {:reply, :ok, %{s | halted: nil}}
 
   def handle_call({:register, client_id, credentials, opts}, _from, s) do
     cond do
@@ -278,7 +315,7 @@ defmodule PacingCenter do
     case Map.fetch(s.leases, id) do
       {:ok, lease} ->
         {lease, s} = credit(s, lease, Map.get(report, :failed), 0)
-        s = put_lease(s, %{lease | last_heartbeat: s.clock.()})
+        s = s |> put_lease(%{lease | last_heartbeat: s.clock.()}) |> check_lag(lease, report)
         {:reply, {:ok, s.lease_ttl_ms}, s}
 
       :error ->
@@ -293,7 +330,7 @@ defmodule PacingCenter do
         give = min(n, Reports.allowance(s.cap))
         cap = Reports.record_use(s.cap, give)
         lease = %{lease | handed: lease.handed + give, last_heartbeat: s.clock.()}
-        {:reply, {:ok, give}, put_lease(%{s | cap: cap}, lease)}
+        {:reply, {:ok, give}, %{s | cap: cap} |> put_lease(lease) |> check_lag(lease, report)}
 
       :error ->
         {:reply, {:error, :lost}, s}
@@ -318,29 +355,69 @@ defmodule PacingCenter do
   defp do_tick(s) do
     s = expire_leases(s)
     spend = s.visible_spend.()
+    # the controller keeps running while halted; its bookkeeping then counts p it
+    # did not send, which only makes it more cautious
     {p, send?, ctl} = s.ctl_mod.step(s.ctl, spend)
-    s = %{s | ctl: ctl, seq: s.seq + 1, p: p}
+    {p, send?} = if s.halted, do: {0.0, true}, else: {p, send?}
+    seq = s.seq + 1
+    s = %{s | ctl: ctl, seq: seq, p: p, sent: prune(Map.put(s.sent, seq, s.clock.()), seq)}
+    sent_at = s.wall_clock.()
 
     msg =
       if send?,
-        do: {:pacing_p, s.campaign, s.epoch, s.seq, p},
-        else: {:pacing_keepalive, s.campaign, s.epoch, s.seq}
+        do: {:pacing_p, s.campaign, s.epoch, seq, p, sent_at},
+        else: {:pacing_keepalive, s.campaign, s.epoch, seq, sent_at}
 
     for pid <- :pg.get_members(@scope, {:pacing, s.campaign}), do: send(pid, msg)
 
-    if s.mode == :grants, do: send_grants(s, spend), else: s
+    if s.mode == :grants, do: send_grants(s, spend, sent_at), else: s
   end
 
-  defp send_grants(s, spend) do
+  defp send_grants(s, spend, sent_at) do
     {g, cap} = Grants.grant(s.cap, spend)
+    # halted: grant nothing (the allowance is computed anyway, so the window stays right)
+    g = if s.halted, do: 0, else: g
     leases = s.leases |> Map.values() |> Enum.sort_by(& &1.id)
     valid_ms = s.step_ms - s.grant_margin_ms
 
     for {lease, share} <- Enum.zip(leases, split(g, length(leases))) do
-      send(lease.pid, {:pacing_grant, s.campaign, s.epoch, s.seq, share, valid_ms})
+      send(lease.pid, {:pacing_grant, s.campaign, s.epoch, s.seq, share, valid_ms, sent_at})
     end
 
     %{s | cap: cap}
+  end
+
+  # send times of recent seq, for lag measurement
+  defp prune(sent, seq) when map_size(sent) > 2_000,
+    do: Map.reject(sent, fn {k, _} -> k < seq - 1_000 end)
+
+  defp prune(sent, _seq), do: sent
+
+  # A heartbeat says the client has applied seq a, so seq a + 1, sent at t, had not
+  # arrived when the client wrote it: the delay is at least now - t (an
+  # overestimate only by the heartbeat's own travel time). Center clock only.
+  defp check_lag(s, lease, %{applied_epoch: epoch, applied_seq: a})
+       when epoch == s.epoch and a < s.seq do
+    with nil <- s.halted, {:ok, t} <- Map.fetch(s.sent, a + 1) do
+      lag = s.clock.() - t
+
+      if lag > s.message_delay_max_ms + s.lag_allowance_ms do
+        reason = {:lag, lease.client_id, lag}
+        s.on_alarm.(reason)
+        %{s | halted: reason}
+      else
+        s
+      end
+    else
+      _ -> s
+    end
+  end
+
+  defp check_lag(s, _lease, _report), do: s
+
+  defp log_alarm(reason) do
+    require Logger
+    Logger.error("PacingCenter halted: delivery delay above plan #{inspect(reason)}")
   end
 
   # g tokens split as evenly as possible among n leases

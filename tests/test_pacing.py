@@ -266,3 +266,60 @@ def test_ignoring_a_message_delay_breaks_eps():
     eps = 0.02
     res = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=10.0, eps=eps), 3000, seed=8)
     assert res.overspent.mean() > 5 * eps
+
+
+# --------------------------------------------------------------------------- unplanned delay
+DEFAULT = Scenario()
+
+
+def _bayes(scn, **kw):
+    return BayesRiskController(scn.center_view(), prior_mean=scn.spend_rate_at_p1, eps=1e-3, **kw)
+
+
+def test_unplanned_large_delay_is_a_runaway_without_defences():
+    scn = Scenario(**{**DEFAULT.__dict__, "message_delay": 120.0})
+    res = simulate(scn, _bayes(scn), 200, seed=3)
+    assert res.overspent.all()
+    assert res.final_spend.mean() > 2 * scn.budget
+
+
+def test_age_limit_turns_a_late_p_into_a_stop():
+    scn = Scenario(**{**DEFAULT.__dict__, "message_delay": 120.0, "message_age_limit": 1.0})
+    res = simulate(scn, _bayes(scn), 200, seed=3)
+    assert not res.overspent.any()
+    assert res.final_spend.max() == 0
+
+
+def test_age_limit_does_nothing_while_p_arrives_in_time():
+    a = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4)
+    scn = Scenario(**{**SMALL.__dict__, "message_age_limit": 1.0})
+    b = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4)
+    np.testing.assert_array_equal(a.final_spend, b.final_spend)
+
+
+def test_rise_limit_bounds_the_runaway():
+    scn = Scenario(**{**DEFAULT.__dict__, "message_delay": 120.0})
+    res = simulate(scn, _bayes(scn, max_rise=1.5), 200, seed=3)
+    assert (res.final_spend - scn.budget).max() < 0.05 * scn.budget
+
+
+def test_rise_limit_caps_growth_per_period():
+    c = BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.5, max_rise=2.0, rise_period=5.0)
+    c.reset(1)
+    z = np.zeros(1)
+    p0 = c.decide(0.0, z, z, z)
+    # nothing visible for a long time: pacing alone would push p up; the limit allows x2 per 5 s
+    p1 = c.decide(5.0, z, np.array([100.0]), z)
+    p2 = c.decide(10.0, z, np.array([200.0]), z)
+    assert p1[0] <= 2 * p0[0] + 1e-12
+    assert p2[0] <= 2 * p1[0] + 1e-12
+
+
+def test_halt_on_lag_stops_a_runaway_and_never_fires_without_one():
+    scn = Scenario(**{**DEFAULT.__dict__, "message_delay": 120.0})
+    res = simulate(scn, _bayes(scn), 200, seed=3, halt_on_lag=5.0)
+    assert not res.overspent.any()
+    a = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4)
+    b = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4,
+                 halt_on_lag=5.0)
+    np.testing.assert_array_equal(a.final_spend, b.final_spend)

@@ -136,3 +136,9 @@ def test_cap_b_needs_the_delay_shorter_than_a_step():
     scn = replace(SMALL, message_delay=5.0, message_delay_max=5.0)
     with pytest.raises(ValueError):
         simulate_with_backstop(scn, _FixedP(0.1), 10, mode="grants", grant_share=0.5)
+
+
+def test_age_limit_stops_capped_clients_too():
+    scn = replace(SMALL, message_delay=4.0, message_age_limit=1.0)
+    res = simulate_with_backstop(scn, _FixedP(0.5), 200, seed=2, mode="grants", grant_share=0.5)
+    assert res.final_spend.max() == 0

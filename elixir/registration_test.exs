@@ -90,7 +90,7 @@ defmodule RegistrationTest do
 
     # a delayed old message does not overwrite the newer p
     %{epoch: e, seq: s} = PacingClient.info(a)
-    send(a, {:pacing_p, campaign, e, s - 1, 0.0})
+    send(a, {:pacing_p, campaign, e, s - 1, 0.0, System.os_time(:millisecond)})
     assert PacingClient.bid?(a)
 
     # silence for longer than 3 periods: the client stops by itself
@@ -398,7 +398,7 @@ defmodule RegistrationTest do
 
     # an old message to the relay changes nothing
     [{_, e, s, _, _}] = :ets.lookup(table, campaign)
-    send(r, {:pacing_p, campaign, e, s - 1, 0.0})
+    send(r, {:pacing_p, campaign, e, s - 1, 0.0, System.os_time(:millisecond)})
     assert Enum.all?(handles, &PacingClient.bid?/1)
 
     # silence: every client on the node stops
@@ -471,7 +471,7 @@ defmodule RegistrationTest do
 
     {:ok, _} = PacingCenter.register(c, "me", :any)
     :ok = PacingCenter.tick(c)
-    assert_receive {:pacing_grant, _, _, _, 50, valid_ms}
+    assert_receive {:pacing_grant, _, _, _, 50, valid_ms, _sent_at}
     assert valid_ms == 5_000 - 2_000
 
     assert {:error, {%ArgumentError{}, _}} =
@@ -518,5 +518,131 @@ defmodule RegistrationTest do
     {c, campaign} = center(:broadcast, clock_pair: cp, message_delay_max_ms: 4)
     a = client(c, campaign, nil, clock_pair: cp)
     assert PacingClient.info(a).h.silence_ms == 3 * 5 + 4
+  end
+
+  # ------------------------------------------------------------------ unplanned delay defences
+
+  test "age check: a client whose messages arrive too old does not bid" do
+    cp = clock()
+    {c, campaign} = center(:broadcast, clock_pair: cp)
+    on_time = client(c, campaign, nil, clock_pair: cp)
+    # this client's messages look 5 s old: max_age is δ_max (0) + clock skew (1 s)
+    late =
+      client(c, campaign, nil,
+        clock_pair: cp,
+        wall_clock: fn -> System.os_time(:millisecond) + 5_000 end
+      )
+
+    tick(c)
+    assert PacingClient.bid?(on_time)
+    refute PacingClient.bid?(late)
+  end
+
+  test "age check: a steady backlog of late messages ends in a stop by silence" do
+    cp = {_, advance} = clock()
+    {:ok, offset} = Agent.start_link(fn -> 0 end)
+    wall = fn -> System.os_time(:millisecond) + Agent.get(offset, & &1) end
+    {c, campaign} = center(:broadcast, clock_pair: cp)
+    a = client(c, campaign, nil, clock_pair: cp, wall_clock: wall)
+    tick(c)
+    assert PacingClient.bid?(a)
+
+    # from now on every message arrives 5 s late, but one still arrives every period
+    Agent.update(offset, fn _ -> 5_000 end)
+
+    for _ <- 1..4 do
+      advance.(5)
+      tick(c)
+    end
+
+    # new seq kept arriving, yet none was fresh: after the silence limit the client stops
+    refute PacingClient.bid?(a)
+  end
+
+  test "age check: the relay drops old messages too" do
+    cp = clock()
+    {c, campaign} = center(:broadcast, clock_pair: cp)
+    {now, _} = cp
+    table = :"relay_#{System.unique_integer([:positive])}"
+
+    {:ok, _} =
+      PacingRelay.start_link(
+        center: c,
+        campaign: campaign,
+        table: table,
+        clock: now,
+        wall_clock: fn -> System.os_time(:millisecond) + 5_000 end
+      )
+
+    h = PacingClient.handle(client(c, campaign, nil, clock_pair: cp, relay: table))
+    tick(c)
+    refute PacingClient.bid?(h)
+  end
+
+  test "lag: the center halts when a heartbeat shows a delay above plan, and resumes on request" do
+    cp = {_, advance} = clock()
+    test = self()
+
+    {c, campaign} =
+      center(:reports,
+        clock_pair: cp,
+        cap: [budget: 100],
+        on_alarm: fn reason -> send(test, {:alarm, reason}) end
+      )
+
+    :ok = PacingCenter.subscribe(campaign)
+    {:ok, %{lease_id: id, epoch: epoch}} = PacingCenter.register(c, "slow", :secret)
+
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_p, ^campaign, ^epoch, 1, 1.0, _}
+
+    # a heartbeat 4 ms later that has applied seq 1: within plan (δ_max 0 + allowance 5)
+    advance.(4)
+    {:ok, _} = PacingCenter.heartbeat(c, id, %{applied_epoch: epoch, applied_seq: 1})
+    refute_received {:alarm, _}
+
+    # seq 2 sent at 4 ms; 12 ms later the client still reports seq 1: delay >= 12 ms
+    :ok = PacingCenter.tick(c)
+    advance.(12)
+    {:ok, _} = PacingCenter.heartbeat(c, id, %{applied_epoch: epoch, applied_seq: 1})
+    assert_receive {:alarm, {:lag, "slow", 12}}
+
+    # halted: p = 0 is sent, whatever the controller says
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_p, ^campaign, ^epoch, 3, +0.0, _}
+
+    :ok = PacingCenter.resume(c)
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_p, ^campaign, ^epoch, 4, 1.0, _}
+  end
+
+  test "lag: a halted center in grants mode grants nothing" do
+    cp = {_, advance} = clock()
+
+    {c, _campaign} =
+      center(:grants,
+        clock_pair: cp,
+        on_alarm: fn _ -> :ok end,
+        cap: [budget: 100, delay: 0.010, step: 0.005, share: 0.5]
+      )
+
+    {:ok, %{lease_id: id, epoch: epoch}} = PacingCenter.register(c, "me", :secret)
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_grant, _, _, 1, 50, _, _}
+    advance.(20)
+    {:ok, _} = PacingCenter.heartbeat(c, id, %{applied_epoch: epoch, applied_seq: 0})
+    assert PacingCenter.info(c).halted
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_grant, _, _, 2, 0, _, _}
+  end
+
+  test "lag: clients report the seq they applied with every heartbeat" do
+    cp = clock()
+    {c, campaign} = center(:reports, clock_pair: cp, cap: [budget: 100])
+    a = client(c, campaign, "a", clock_pair: cp)
+    tick(c)
+    :ok = PacingClient.heartbeat(a)
+    # applied seq 1 right away: no alarm, still running
+    refute PacingCenter.info(c).halted
   end
 end

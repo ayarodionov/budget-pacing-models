@@ -39,6 +39,9 @@ defmodule PacingClient do
     * **Stop on silence.** p counts as 0 if `seq` has not advanced for
       `silence_ms` (default 3 periods).
     * **Order.** A message is applied only if its `{epoch, seq}` is newer.
+    * **Age.** A message older than `max_age_ms` (by its `sent_at`, against the
+      client's wall clock) is ignored, so a backlog of late messages ends in a
+      stop by silence, not in bids on an old p.
     * **Lease expiry (`:reports`).** The wallet is usable only until `lease_ttl_ms`
       after the last renewal the center acknowledged. Then the remaining tokens
       are dropped (kept as *unused*, returned when the client registers again).
@@ -57,6 +60,10 @@ defmodule PacingClient do
     * `:heartbeat_ms` - default the lease ttl / 3; `:manual` for no timer
     * `:clock` - zero-arity function returning ms (default monotonic time)
     * `:coin` - zero-arity function returning a uniform number in [0, 1)
+    * `:max_age_ms` - default the center's (δ_max + clock skew); `:infinity` to
+      turn the age check off
+    * `:wall_clock` - zero-arity function returning wall-clock ms
+      (default `System.os_time(:millisecond)`)
   """
 
   use GenServer
@@ -223,6 +230,8 @@ defmodule PacingClient do
       credentials: Keyword.get(opts, :credentials),
       wallet_size: Keyword.get(opts, :wallet_size, 10),
       heartbeat_ms: Keyword.get(opts, :heartbeat_ms),
+      max_age_ms: Keyword.get(opts, :max_age_ms, hello.max_age_ms),
+      wall_clock: Keyword.get(opts, :wall_clock, fn -> System.os_time(:millisecond) end),
       lease_id: nil,
       lease_ttl_ms: nil,
       unused: 0,
@@ -284,15 +293,15 @@ defmodule PacingClient do
   end
 
   @impl true
-  def handle_info({:pacing_p, campaign, epoch, seq, p}, %{own_table?: true} = s) do
-    if campaign == s.h.campaign and newer?(s, epoch, seq),
+  def handle_info({:pacing_p, campaign, epoch, seq, p, sent_at}, %{own_table?: true} = s) do
+    if campaign == s.h.campaign and fresh?(s, sent_at) and newer?(s, epoch, seq),
       do: :ets.insert(s.h.table, {campaign, epoch, seq, p, s.h.clock.()})
 
     {:noreply, s}
   end
 
-  def handle_info({:pacing_keepalive, campaign, epoch, seq}, %{own_table?: true} = s) do
-    with true <- campaign == s.h.campaign and newer?(s, epoch, seq),
+  def handle_info({:pacing_keepalive, campaign, epoch, seq, sent_at}, %{own_table?: true} = s) do
+    with true <- campaign == s.h.campaign and fresh?(s, sent_at) and newer?(s, epoch, seq),
          {_, _, p, _} <- current(s.h) do
       :ets.insert(s.h.table, {campaign, epoch, seq, p, s.h.clock.()})
     end
@@ -300,11 +309,11 @@ defmodule PacingClient do
     {:noreply, s}
   end
 
-  def handle_info({:pacing_grant, campaign, epoch, seq, tokens, valid_ms}, s) do
+  def handle_info({:pacing_grant, campaign, epoch, seq, tokens, valid_ms, sent_at}, s) do
     # sent right after the p of the same period, so {epoch, seq} is not older than the last p
     {e, sq, _, _} = current(s.h) || {epoch, seq, 0.0, 0}
 
-    if campaign == s.h.campaign and {epoch, seq} >= {e, sq} do
+    if campaign == s.h.campaign and fresh?(s, sent_at) and {epoch, seq} >= {e, sq} do
       ref = s.h.tokens
       # empty first, so no bid can take an old token under the new validity
       :atomics.exchange(ref, @tok, 0)
@@ -323,6 +332,9 @@ defmodule PacingClient do
   def handle_info(_msg, s), do: {:noreply, s}
 
   # ------------------------------------------------------------------ slow path
+
+  defp fresh?(%{max_age_ms: :infinity}, _sent_at), do: true
+  defp fresh?(s, sent_at), do: s.wall_clock.() - sent_at <= s.max_age_ms
 
   defp newer?(s, epoch, seq) do
     case current(s.h) do
@@ -343,15 +355,7 @@ defmodule PacingClient do
         {:reply, false, s}
 
       true ->
-        s = top_up(s)
-
-        if cas_take(h.tokens) do
-          {:reply, counted(h, :yes) == :yes, s}
-        else
-          # budget used up for now: refuse without calls for a while
-          :atomics.put(h.tokens, @retry, now + s.step_ms)
-          {:reply, false, s}
-        end
+        top_up_and_take(s, now)
     end
   end
 
@@ -359,6 +363,25 @@ defmodule PacingClient do
     ok? = h.clock.() < :atomics.get(h.tokens, @until) and cas_take(h.tokens)
     if ok?, do: counted(h, :yes)
     {:reply, ok?, s}
+  end
+
+  # Top up and take a token. Other bidders may drain the new tokens first; then top
+  # up again. Only a top-up that gets nothing means the budget is used up.
+  defp top_up_and_take(%{h: h} = s, now) do
+    {n, s} = top_up(s)
+
+    cond do
+      cas_take(h.tokens) ->
+        {:reply, counted(h, :yes) == :yes, s}
+
+      n > 0 ->
+        top_up_and_take(s, now)
+
+      true ->
+        # budget used up for now: refuse without calls for a while
+        :atomics.put(h.tokens, @retry, now + s.step_ms)
+        {:reply, false, s}
+    end
   end
 
   # the lease ran out without renewal: drop the wallet and register again,
@@ -379,10 +402,11 @@ defmodule PacingClient do
       {:ok, n} ->
         :atomics.add(s.h.tokens, @tok, n)
         :atomics.put(s.h.tokens, @until, s.h.clock.() + s.lease_ttl_ms)
-        s
+        {n, s}
 
       {:error, :lost} ->
-        drop_lease(s)
+        # registered again (old lease settled); the next top-up uses the new lease
+        {1, drop_lease(s)}
     end
   end
 
@@ -407,7 +431,17 @@ defmodule PacingClient do
   defp failed(s), do: :counters.get(s.h.counters, @failed)
 
   # failures are counted per lease: the center knows each lease's cumulative count
-  defp lease_report(s, unused), do: %{failed: failed(s) - s.lease_failed_base, unused: unused}
+  # also tells the center which p was applied last, so it can measure the delay
+  defp lease_report(s, unused) do
+    {epoch, seq, _, _} = current(s.h) || {nil, nil, nil, nil}
+
+    %{
+      failed: failed(s) - s.lease_failed_base,
+      unused: unused,
+      applied_epoch: epoch,
+      applied_seq: seq
+    }
+  end
 
   defp register(s, previous) do
     opts = if previous, do: [previous: previous], else: []
@@ -456,7 +490,10 @@ defmodule PacingRelay do
       {:ok, _} = PacingRelay.start_link(center: center, campaign: :summer, table: :summer_p)
       {:ok, c} = PacingClient.start_link(center: center, campaign: :summer, relay: :summer_p)
 
-  Options: `:center`, `:campaign`, `:table` (an atom, unique on the node), `:clock`.
+  Like a client, it drops messages older than `max_age_ms` (default: the center's).
+
+  Options: `:center`, `:campaign`, `:table` (an atom, unique on the node), `:clock`,
+  `:wall_clock`, `:max_age_ms`.
   """
 
   use GenServer
@@ -479,17 +516,27 @@ defmodule PacingRelay do
     hello = PacingCenter.hello(Keyword.fetch!(opts, :center))
     :ets.insert(table, {campaign, hello.epoch, hello.seq, hello.p, clock.()})
     :ok = PacingCenter.subscribe(campaign)
-    {:ok, %{table: table, campaign: campaign, clock: clock}}
+
+    {:ok,
+     %{
+       table: table,
+       campaign: campaign,
+       clock: clock,
+       max_age_ms: Keyword.get(opts, :max_age_ms, hello.max_age_ms),
+       wall_clock: Keyword.get(opts, :wall_clock, fn -> System.os_time(:millisecond) end)
+     }}
   end
 
   @impl true
-  def handle_info({:pacing_p, campaign, epoch, seq, p}, %{campaign: campaign} = s) do
-    if newer?(s, epoch, seq), do: :ets.insert(s.table, {campaign, epoch, seq, p, s.clock.()})
+  def handle_info({:pacing_p, campaign, epoch, seq, p, sent_at}, %{campaign: campaign} = s) do
+    if fresh?(s, sent_at) and newer?(s, epoch, seq),
+      do: :ets.insert(s.table, {campaign, epoch, seq, p, s.clock.()})
+
     {:noreply, s}
   end
 
-  def handle_info({:pacing_keepalive, campaign, epoch, seq}, %{campaign: campaign} = s) do
-    if newer?(s, epoch, seq) do
+  def handle_info({:pacing_keepalive, campaign, epoch, seq, sent_at}, %{campaign: campaign} = s) do
+    if fresh?(s, sent_at) and newer?(s, epoch, seq) do
       [{_, _, _, p, _}] = :ets.lookup(s.table, campaign)
       :ets.insert(s.table, {campaign, epoch, seq, p, s.clock.()})
     end
@@ -503,4 +550,7 @@ defmodule PacingRelay do
     [{_, e, sq, _, _}] = :ets.lookup(s.table, s.campaign)
     {epoch, seq} > {e, sq}
   end
+
+  defp fresh?(%{max_age_ms: :infinity}, _sent_at), do: true
+  defp fresh?(s, sent_at), do: s.wall_clock.() - sent_at <= s.max_age_ms
 end
