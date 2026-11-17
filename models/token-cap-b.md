@@ -80,7 +80,7 @@ during that step**. Unused tokens expire. It never grants more than
 
 where S_obs is the spend visible in the budget, as in [system.md](system.md).
 
-**Proof.** The spend delay d is fixed (answer A in [INITIALMODEL.MD](../INITIALMODEL.MD)). So the spend from
+**Proof.** The spend delay d is fixed (answer A in [INITIALMODEL.md](INITIALMODEL.md)). So the spend from
 every step older than d is already in S_obs, and the only spend not yet visible
 comes from the steps of the last d seconds. Each of those steps spent at most
 the tokens it was granted. Hence
