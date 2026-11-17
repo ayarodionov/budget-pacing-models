@@ -97,6 +97,13 @@ counting them.
   later than d, the proof breaks. Version (a) has no such assumption: a late
   failure report only holds budget longer. So use (b) only if d is a hard
   maximum, such as a guaranteed settlement time, not a typical delay.
+- **It also depends on how fast grants reach the clients.** A grant must be used
+  within its own period. If it arrives up to δ_max late, the client may use it
+  only for Δ − margin after it arrives, with margin ≥ δ_max, and δ_max must be
+  shorter than Δ. Ignoring a 4 s delivery delay (Δ = 5 s) made 94 % of runs
+  overspend when every bid is charged ([system.md](system.md) §6,
+  [results/overview.md](../results/overview.md)). Planned for, it costs about
+  0.1 point of underspend.
 - **The center must choose how many tokens to grant.** It does not see demand
   (bids per step), and it cannot compute it from k̂, because it knows only
   k = λ·r, not λ.

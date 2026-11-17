@@ -23,12 +23,13 @@ tables. Each model file summarises its own results.
 
 ![Underspend and overspend of the three models](results/overview.png)
 
-The default scenario (B = 5000, T = 1 h, d = 30 s). Two things vary while the
+The default scenario (B = 5000, T = 1 h, d = 30 s). Three things vary while the
 money spent per second at p = 1 stays at 100 units: r, the share of bids that are
-charged (top), and c, the cost of one realised token (bottom).
+charged (top), c, the cost of one realised token (middle), and δ, the delay
+before a new p reaches the clients (bottom).
 
-- **Overspend.** The probabilistic controller overspends in about ε = 0.1 % of
-  runs. The token caps never do.
+- **Overspend.** The probabilistic controller overspends in less than ε = 0.1 %
+  of runs. The token caps never do, as long as the delivery delay is planned for.
 - **Share of bids charged r.** The probabilistic controller has the same small
   underspend for every r. The caps leave more budget unspent when most bids are
   not charged (r = 0.1), and more the later the center learns about failures; at
@@ -39,6 +40,12 @@ charged (top), and c, the cost of one realised token (bottom).
   hardly changes with c. With small spends the probabilistic controller is the
   cheapest; at c = 3 and above, the cap with fast failure reports (5 s) costs
   less.
+- **Delivery delay of p, δ.** Planned for (δ_max = δ), it costs little: at most
+  0.16 points for the probabilistic controller, whose in-flight window grows by a
+  period, and about 0.1 point for the caps. Ignored (δ_max = 0), a 4 s delay
+  breaks the probabilistic controller's guarantee (1.4 % of runs overspend, 14
+  times ε) and cap (b)'s (94 % at r = 1). Cap (a) is unaffected, because it counts
+  tokens when they are used, not by time.
 
 Table: [results/overview.md](results/overview.md).
 
@@ -74,7 +81,7 @@ remainder is the price of the 30 s delay.
 uv run pytest                          # Python tests, ~7 s
 uv run python -m pacing.experiments    # probabilistic controller, ~11 min (--quick: ~1 min)
 uv run python -m pacing.backstop       # token cap, versions (a) and (b), ~5 min (--quick: ~30 s)
-uv run python -m pacing.overview       # README comparison chart, ~45 s
+uv run python -m pacing.overview       # README comparison chart, ~80 s
 make -C elixir test                    # Elixir: math vs scipy; controller, token cap vs Python; registration
 make -C elixir bench                   # pure Elixir vs NIF speed
 ```

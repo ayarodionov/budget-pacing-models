@@ -93,3 +93,46 @@ def test_cap_with_unit_cost_never_overspends(mode, c):
     kw = {"grant_share": 0.5} if mode == "grants" else {}
     res = simulate_with_backstop(scn, _FullThrottle(), 1000, 5.0, seed=2, mode=mode, **kw)
     assert res.final_spend.max() <= scn.budget + 1e-9
+
+
+# --------------------------------------------------------------------------- delivery delay
+class _FixedP:
+    def __init__(self, p):
+        self.p = p
+
+    def reset(self, n):
+        pass
+
+    def decide(self, t, obs, exp_obs, inflight):
+        return np.full(obs.shape, self.p)
+
+
+@pytest.mark.parametrize("r", [0.1, 1.0])
+@pytest.mark.parametrize("delta_max", [0.0, 4.0])
+def test_cap_a_needs_no_timing_assumption(r, delta_max):
+    """(a) counts tokens when they are used: a delivery delay, even ignored, cannot overspend."""
+    scn = replace(SMALL, request_rate=10.0 / r, realization=r, message_delay=4.0,
+                  message_delay_max=delta_max)
+    res = simulate_with_backstop(scn, _FullThrottle(), 2000, 5.0, seed=1)
+    assert res.final_spend.max() <= scn.budget
+
+
+@pytest.mark.parametrize("p", [1.0, 0.05, 0.01])
+def test_cap_b_with_margin_covering_the_delay_never_overspends(p):
+    scn = replace(SMALL, request_rate=100.0, realization=1.0, delay=5.0, message_delay=4.0,
+                  message_delay_max=4.0)
+    res = simulate_with_backstop(scn, _FixedP(p), 2000, seed=2, mode="grants", grant_share=0.5)
+    assert res.final_spend.max() <= scn.budget
+
+
+def test_cap_b_breaks_when_the_delay_is_ignored():
+    """A grant used after its period ends is spend the center no longer counts."""
+    scn = replace(SMALL, request_rate=100.0, realization=1.0, delay=5.0, message_delay=4.0)
+    res = simulate_with_backstop(scn, _FixedP(0.05), 2000, seed=2, mode="grants", grant_share=0.5)
+    assert res.overspent.mean() > 0.5
+
+
+def test_cap_b_needs_the_delay_shorter_than_a_step():
+    scn = replace(SMALL, message_delay=5.0, message_delay_max=5.0)
+    with pytest.raises(ValueError):
+        simulate_with_backstop(scn, _FixedP(0.1), 10, mode="grants", grant_share=0.5)

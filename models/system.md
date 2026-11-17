@@ -484,6 +484,15 @@ client that disappears while holding tokens may still be spending them.
   margin for clock drift (or shorten the grant's validity by that margin).
   Without this rule a cut-off client could keep spending, and the cap's
   guarantee would not hold.
+- **In version (b) the grant margin must cover the delivery delay.** A grant
+  arrives up to δ_max late; if the client then used it for a whole period, part
+  of its spend would happen in the next period, after the center has stopped
+  counting the grant. In the simulation, ignoring a 4 s delay (period 5 s) makes
+  94 % of runs overspend when every bid is charged
+  ([../results/overview.md](../results/overview.md)). So the client uses a grant
+  for Δ − margin after it arrives, with margin ≥ δ_max plus clock drift, and δ_max
+  must be shorter than a period. Version (a) needs no such rule: it counts tokens
+  when they are handed out, not by time.
 
 Combined with these rules, the caps keep their guarantee whatever clients do:
 join, leave, crash, or keep bidding while cut off.

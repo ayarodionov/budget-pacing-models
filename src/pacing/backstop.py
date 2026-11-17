@@ -69,13 +69,21 @@ def simulate_with_backstop(
 
     ``trace``, if a list, receives one dict per control step for run 0 (what the
     center saw and decided); used to generate the Elixir golden tests.
+
+    Delivery delay (``scn.message_delay`` delta, planned bound ``message_delay_max``
+    delta_max): clients use the p decided delta seconds ago, and the center's
+    in-flight window is ``scn.center_delay_steps``. Version (a) counts tokens when
+    they are used, so its cap needs no timing assumption. In version (b) a grant
+    arrives delta late and is usable for step - delta_max after it arrives (the
+    grant margin is delta_max); if delta > delta_max, it spills into the next step.
+    Version (b) needs delta and delta_max shorter than a step.
     """
-    if scn.message_delay or scn.message_delay_max:
-        raise NotImplementedError("the token-cap simulation assumes p reaches clients at once")
     if mode not in ("reports", "grants"):
         raise ValueError("mode must be 'reports' or 'grants'")
     if mode == "grants" and (grant_share is None) == (grant_headroom is None):
         raise ValueError("version (b) needs exactly one of grant_share / grant_headroom")
+    if cap and mode == "grants" and max(scn.message_delay, scn.message_delay_max) >= scn.step:
+        raise ValueError("version (b) needs delta and delta_max shorter than a step")
     rng = np.random.default_rng(seed)
     n_steps, d_steps, dt = scn.n_steps, scn.delay_steps, scn.step
     f_steps = math.ceil(failure_delay / dt - 1e-9)
@@ -83,8 +91,17 @@ def simulate_with_backstop(
     budget = math.floor(scn.budget_events + 1e-9)  # B/c: whole tokens the budget can pay for
 
     ring = d_steps + 1
-    ring_p = np.zeros((n_runs, ring))  # effective p per step (after blocking)
     ring_x = np.zeros((n_runs, ring), dtype=np.int64)  # realised tokens per step
+    cd_steps = scn.center_delay_steps  # the center's in-flight window for p
+    pring = cd_steps + 1
+    ring_p = np.zeros((n_runs, pring))  # effective p per step (after blocking)
+    instant = scn.message_delay == 0 and scn.message_delay_max == 0
+    m_steps = int(scn.message_delay // dt)
+    m_frac = scn.message_delay - m_steps * dt
+    hist = m_steps + 2
+    ring_dec = np.zeros((n_runs, hist))  # decided p, for the p clients actually use
+    margin = scn.message_delay_max  # (b): a grant is usable for step - margin after it arrives
+    leftover = np.zeros(n_runs, dtype=np.int64)  # (b): tokens of the last grant still usable
     fring = f_steps + 1
     ring_f = np.zeros((n_runs, fring), dtype=np.int64)  # failures per step
     ring_g = np.zeros((n_runs, ring), dtype=np.int64)  # (b): tokens granted per step
@@ -103,11 +120,25 @@ def simulate_with_backstop(
     for i in range(n_steps):
         seen = float(c * obs_spend[0])
         p = np.clip(controller.decide(i * dt, c * obs_spend, obs_exposure, inflight), 0.0, 1.0)
-        wanted = rng.poisson(lam * p * dt)  # bids the clients would make
+        ring_dec[:, i % hist] = p
+        if instant:
+            def bids(lo, hi):  # noqa: E306  bids the clients want during [lo, hi) of this step
+                return rng.poisson(lam * p * dt)
+        else:
+            # clients use p_a during [0, m_frac) of this step and p_b after it
+            p_a = ring_dec[:, (i - m_steps - 1) % hist] if i - m_steps - 1 >= 0 else 0.0
+            p_b = ring_dec[:, (i - m_steps) % hist] if i - m_steps >= 0 else 0.0
+
+            def bids(lo, hi):  # noqa: E306
+                a = max(0.0, min(hi, m_frac) - lo)
+                b = max(0.0, hi - max(lo, m_frac))
+                return rng.poisson(lam * (p_a * a + p_b * b))
         grant = None
         if not cap:
+            wanted = bids(0.0, dt)
             tokens = wanted
         elif mode == "reports":
+            wanted = bids(0.0, dt)
             allowance = np.maximum(budget + fail_obs - used, 0)
             tokens = np.minimum(wanted, allowance)
         else:
@@ -117,7 +148,20 @@ def simulate_with_backstop(
             else:
                 grant = np.ceil(grant_headroom * lam * p * dt).astype(np.int64)
             grant = np.minimum(grant, allowance)
-            tokens = np.minimum(wanted, grant)
+            if instant:
+                wanted = bids(0.0, dt)
+                tokens = np.minimum(wanted, grant)
+            else:
+                dl = scn.message_delay
+                spill = max(0.0, dl - margin)  # the last grant is still usable until here
+                end = min(dt, dl + dt - margin)  # this grant: usable during [dl, end)
+                w_old, w_new = bids(0.0, spill), bids(dl, end)
+                w_none = bids(spill, dl) + bids(end, dt)  # no valid grant: blocked
+                t_old = np.minimum(w_old, leftover) if spill > 0 else 0
+                t_new = np.minimum(w_new, grant)
+                leftover = grant - t_new
+                wanted = w_old + w_new + w_none
+                tokens = t_old + t_new
         blocked += wanted - tokens
         x = rng.binomial(tokens, r)  # realised
         used += tokens
@@ -131,7 +175,7 @@ def simulate_with_backstop(
         if grant is not None:
             ring_g[:, slot] = grant
             granted_unresolved += grant
-        ring_p[:, slot] = p_eff
+        ring_p[:, i % pring] = p_eff
         ring_x[:, slot] = x
         inflight += p_eff * dt
         fslot = i % fring
@@ -141,10 +185,12 @@ def simulate_with_backstop(
         if j >= 0:
             sj = j % ring
             obs_spend += ring_x[:, sj]
-            obs_exposure += ring_p[:, sj] * dt
-            inflight -= ring_p[:, sj] * dt
-            np.maximum(inflight, 0.0, out=inflight)
             granted_unresolved -= ring_g[:, sj]  # its spend is now visible
+        j = i - cd_steps
+        if j >= 0:
+            obs_exposure += ring_p[:, j % pring] * dt
+            inflight -= ring_p[:, j % pring] * dt
+            np.maximum(inflight, 0.0, out=inflight)
         jf = i - f_steps
         reported = ring_f[:, jf % fring].copy() if jf >= 0 else np.zeros(n_runs, dtype=np.int64)
         fail_obs += reported
