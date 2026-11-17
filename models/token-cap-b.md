@@ -169,7 +169,49 @@ What this shows:
    d to see the spend of tokens granted.
 4. **The end-game helps (b) the most at r = 0.5**: 0.38 % → 0.13 %.
 
-## 6. Choosing between (a) and (b): recommendations
+## 6. Lost connection between center and clients
+
+Version (b) is safe through an outage only under conditions about time.
+
+**Center → clients lost** (no p, no grants). No new grant arrives, so clients
+stop when their current grant expires, within one period: the fastest stop of
+all models.
+
+**The reconnect is the danger.** Grants queued during the outage may arrive late,
+in a burst. A client measures a grant's validity from when it *arrives*, so a
+late grant could be used after its period has ended, as spend the center no
+longer counts. With a 4 s delay the center did not plan for, 94 % of runs
+overspent when every bid is charged ([system.md](system.md) §6). Three
+conditions keep (b) safe:
+
+1. the **age check** drops grants older than δ_max + clock skew, which needs
+   clocks synchronised within a known skew;
+2. the **grant margin is at least δ_max**, so a grant ends before its period;
+3. the **spend delay d is a hard maximum**.
+
+**Clients → center lost** (heartbeats). The center stops granting to a client
+it does not hear from. Safe: the client simply stops.
+
+**What an outage costs.** Nothing beyond the usual: grants expire, and their
+spend shows in the budget after d, so the budget is fully usable again without
+any report from the clients. The bids that would have reached cut-off clients
+are lost; the controller raises p for the clients still connected.
+
+| | (a) failure reports | (b) no reports |
+|---|---|---|
+| Overspend through any outage | impossible | impossible if age check + margin ≥ δ_max + hard d |
+| Conditions | no bid without a token, honest reports, durable counts | the same durable state, plus synchronised clocks and timing bounds |
+| How fast cut-off clients stop | when the wallet is empty or the lease expires | within one period |
+| Budget lost to an outage | up to one wallet per client that never returns | none |
+| Needs reports from clients | yes | no |
+
+If overspend must be impossible through outages, use (a), with small wallets
+near the end and a durable store. (b) is a good choice when clients cannot send
+reports, provided their clocks are synchronised and the age check is on. These
+points follow from the rules and are checked by the Elixir tests; the token-cap
+simulation does not model a link outage yet, so there are no measured costs.
+
+## 7. Choosing between (a) and (b): recommendations
 
 1. **If clients can be required to hold tokens, use the cap.** It is the only
    way to make overspend impossible rather than unlikely. It also protects

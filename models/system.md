@@ -437,6 +437,9 @@ usually fast can still drop for a while. What each model needs to stay safe:
 | budget feed stalls | halt on a stale feed, otherwise a runaway near the end | safe (does not use the feed) | halt on a stale feed, otherwise unsafe |
 | center restarts | clients stop after L; risk used must survive | safe **only if the token counts survive** | safe only if the grant window survives |
 
+Details per cap: [token-cap-a.md](token-cap-a.md) §7 and
+[token-cap-b.md](token-cap-b.md) §6.
+
 Rules, all implemented (Python simulation and `PacingCenter`):
 
 1. **Cap (a) is the only certain guarantee** through any outage: it counts

@@ -231,4 +231,40 @@ Simplifications:
   cap's guarantee does not depend on this. Only its cost does.
 
 Choosing between versions (a) and (b), and recommendations:
-[token-cap-b.md](token-cap-b.md) §6.
+[token-cap-b.md](token-cap-b.md) §7.
+
+## 7. Lost connection between center and clients
+
+Version (a) is the one model whose guarantee survives an outage of any length.
+It counts tokens when they are handed out, so nothing in it depends on time:
+not d, not the delay of messages, not clocks, not how long the outage lasts.
+
+**Center → clients lost** (no p, no top-ups, no replies). A cut-off client can
+spend only the tokens already in its wallet; it cannot get more, because a
+top-up needs the center. Every token was counted when it left the center, so
+spend ≤ c·(tokens handed out − failures reported) ≤ B holds at every moment.
+The client also stops on its own: p = 0 after its silence limit, and no bids
+once its lease has expired.
+
+**Clients → center lost** (reports and heartbeats). Failures are no longer
+reported, so the center cannot free budget: underspend, never overspend. The
+lease is marked lost, and its tokens stay counted until the client reconnects
+and reports the old lease (its failures and unused tokens).
+
+**What an outage costs.** The budget in the wallets of cut-off clients, plus
+their unreported failures, is held until they reconnect and report. A client
+that never comes back keeps that budget lost for good, so wallets should be
+small near the end (`wallet_share` in `PacingCenter`). The bids that would have
+reached cut-off clients are lost too; the controller raises p for the clients
+still connected.
+
+**Conditions:** no bid without a token, honest failure reports, and token
+counts that survive a center restart (durable store, [system.md](system.md) §6).
+
+Compared with version (b): (b) stops cut-off clients faster (within one period)
+and gets its budget back by itself after the outage, but its guarantee needs
+synchronised clocks and timing bounds ([token-cap-b.md](token-cap-b.md) §6).
+These points follow from the rules and are checked by the Elixir tests (cut-off
+clients, lost leases, restarts); the token-cap simulation does not model a
+link outage yet, so there are no measured costs.
+
