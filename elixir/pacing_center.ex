@@ -45,6 +45,24 @@ defmodule PacingCenter do
     * Grants are valid for `step_ms − grant_margin_ms`, measured from when the
       client receives them; the margin covers delivery delay and clock drift.
 
+  ## Delivery delay of p (δ_max)
+
+  If p (and grants) can reach clients late, through a broker, a relay or clients
+  that poll, set `message_delay_max_ms` to the largest delay. One setting keeps
+  every part consistent (`models/system.md` §6, *Push or pull*):
+
+    * the controller's in-flight window grows by ceil(δ_max / step) periods
+      (`message_delay_max` of `PacingController`, filled in from this option);
+    * in `:grants` mode the grant margin defaults to δ_max, and a smaller margin,
+      or a δ_max of a whole period or more, is refused: a grant used after its
+      period ends is spend the center no longer counts;
+    * clients get it in `hello/1` and wait 3 periods plus δ_max before they treat
+      silence as a stop.
+
+  Ignoring a real delivery delay breaks the guarantees: in the simulations a 4 s
+  delay (5 s period) made 1.4 % of runs overspend with ε = 10⁻³, and 94 % in
+  version (b) when every bid is charged.
+
   The client's side (stop on silence, local lease expiry) is in `PacingClient`.
 
   ## Options
@@ -58,11 +76,15 @@ defmodule PacingCenter do
       (required in the token-cap modes)
     * `:visible_spend` - zero-arity function returning the spend the budget shows
       now, in budget units (required)
-    * `:step_ms` - control period in ms (required)
+    * `:step_ms` - control period in ms (required); must match the `step` of the
+      controller and cap options, which are in seconds
+    * `:message_delay_max_ms` - largest delay before p or a grant reaches the
+      clients (default 0)
     * `:tick` - `:auto` (default: run every `step_ms`) or `:manual` (call `tick/1`)
     * `:lease_ttl_ms` - default `3 * step_ms`
-    * `:grant_margin_ms` - default `step_ms / 10`; must cover the delivery delay of a
-      grant plus clock drift, so set it to at least the controller's `message_delay_max`
+    * `:grant_margin_ms` - default max(`step_ms / 10`, `message_delay_max_ms`); must
+      cover the delivery delay of a grant plus clock drift, so it may not be smaller
+      than `message_delay_max_ms`
     * `:authenticate` - `fn client_id, credentials -> boolean end`
     * `:clock` - zero-arity function returning ms (default monotonic time)
     * `:epoch` - default `System.os_time(:microsecond)` at start
@@ -133,18 +155,34 @@ defmodule PacingCenter do
     if mode != :broadcast and not Keyword.has_key?(opts, :authenticate),
       do: raise(ArgumentError, "#{mode} mode needs :authenticate")
 
+    dmax_ms = Keyword.get(opts, :message_delay_max_ms, 0)
+
     {ctl_mod, ctl} =
       case Keyword.fetch!(opts, :controller) do
-        {mod, state} when is_atom(mod) -> {mod, state}
-        ctl_opts -> {PacingController, PacingController.new(ctl_opts)}
+        {mod, state} when is_atom(mod) ->
+          {mod, state}
+
+        ctl_opts ->
+          check_step!(ctl_opts, step_ms, "controller")
+          {PacingController, PacingController.new(with_delay(ctl_opts, dmax_ms))}
       end
 
     cap =
       case mode do
         :broadcast -> nil
         :reports -> Reports.new(Keyword.fetch!(opts, :cap))
-        :grants -> Grants.new(Keyword.fetch!(opts, :cap))
+        :grants -> Grants.new(check_step!(Keyword.fetch!(opts, :cap), step_ms, "cap"))
       end
+
+    grant_margin_ms = Keyword.get(opts, :grant_margin_ms, max(div(step_ms, 10), dmax_ms))
+
+    if mode == :grants do
+      if dmax_ms >= step_ms,
+        do: raise(ArgumentError, "grants mode needs message_delay_max_ms < step_ms")
+
+      if grant_margin_ms < dmax_ms,
+        do: raise(ArgumentError, "grant_margin_ms must be at least message_delay_max_ms")
+    end
 
     state = %{
       campaign: Keyword.fetch!(opts, :campaign),
@@ -155,7 +193,8 @@ defmodule PacingCenter do
       visible_spend: Keyword.fetch!(opts, :visible_spend),
       step_ms: step_ms,
       lease_ttl_ms: Keyword.get(opts, :lease_ttl_ms, 3 * step_ms),
-      grant_margin_ms: Keyword.get(opts, :grant_margin_ms, div(step_ms, 10)),
+      grant_margin_ms: grant_margin_ms,
+      message_delay_max_ms: dmax_ms,
       authenticate: Keyword.get(opts, :authenticate, fn _, _ -> true end),
       clock: Keyword.get(opts, :clock, fn -> System.monotonic_time(:millisecond) end),
       epoch: Keyword.get(opts, :epoch, System.os_time(:microsecond)),
@@ -180,8 +219,18 @@ defmodule PacingCenter do
   @impl true
   def handle_call(:tick, _from, s), do: {:reply, :ok, do_tick(s)}
 
-  def handle_call(:hello, _from, s),
-    do: {:reply, %{mode: s.mode, step_ms: s.step_ms, epoch: s.epoch, seq: s.seq, p: s.p}, s}
+  def handle_call(:hello, _from, s) do
+    reply = %{
+      mode: s.mode,
+      step_ms: s.step_ms,
+      message_delay_max_ms: s.message_delay_max_ms,
+      epoch: s.epoch,
+      seq: s.seq,
+      p: s.p
+    }
+
+    {:reply, reply, s}
+  end
 
   def handle_call(:info, _from, s), do: {:reply, s, s}
 
@@ -341,6 +390,31 @@ defmodule PacingCenter do
   defp credit(s, lease, _failed, _unused), do: {lease, s}
 
   defp put_lease(s, lease), do: %{s | leases: Map.put(s.leases, lease.id, lease)}
+
+  # the controller's message_delay_max (seconds) comes from message_delay_max_ms
+  defp with_delay(ctl_opts, dmax_ms) do
+    case Keyword.fetch(ctl_opts, :message_delay_max) do
+      :error ->
+        Keyword.put(ctl_opts, :message_delay_max, dmax_ms / 1000)
+
+      {:ok, v} when abs(v * 1000 - dmax_ms) < 1.0e-6 ->
+        ctl_opts
+
+      {:ok, v} ->
+        raise ArgumentError,
+              "controller message_delay_max #{v} s differs from message_delay_max_ms #{dmax_ms}"
+    end
+  end
+
+  defp check_step!(opts, step_ms, what) do
+    case Keyword.fetch(opts, :step) do
+      {:ok, step} when abs(step * 1000 - step_ms) > 1.0e-6 ->
+        raise ArgumentError, "#{what} step #{step} s differs from step_ms #{step_ms}"
+
+      _ ->
+        opts
+    end
+  end
 
   defp ensure_scope do
     case :pg.start(@scope) do

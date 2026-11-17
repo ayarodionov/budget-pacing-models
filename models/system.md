@@ -382,7 +382,9 @@ ceil(d/Δ), and changes nothing else.
   then never covers more than what has really become visible, so k̂ can only
   come out a little high.
 - Code: `Scenario.message_delay_max` in the Python simulation,
-  `message_delay_max:` in `PacingController`.
+  `message_delay_max:` in `PacingController`, and `message_delay_max_ms:` in
+  `PacingCenter`, which also sets the grant margin and the clients' silence
+  limit from it.
 
 *What it costs and what ignoring it costs*
 ([probabilistic.md](probabilistic.md) §3, item 11). Planning with δ_max keeps

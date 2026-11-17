@@ -53,7 +53,7 @@ defmodule PacingClient do
     * `:client_id`, `:credentials` - for registration (token-cap modes)
     * `:relay` - name of a `PacingRelay` ETS table on this node (optional)
     * `:wallet_size` - tokens per top-up in `:reports` mode (default 10)
-    * `:silence_ms` - default 3 × the center's period
+    * `:silence_ms` - default 3 × the center's period + its `message_delay_max_ms`
     * `:heartbeat_ms` - default the lease ttl / 3; `:manual` for no timer
     * `:clock` - zero-arity function returning ms (default monotonic time)
     * `:coin` - zero-arity function returning a uniform number in [0, 1)
@@ -210,7 +210,8 @@ defmodule PacingClient do
       counters: :counters.new(3, [:write_concurrency]),
       clock: clock,
       coin: Keyword.get(opts, :coin, &:rand.uniform/0),
-      silence_ms: Keyword.get(opts, :silence_ms, 3 * hello.step_ms)
+      # a late p is not silence: allow for the delivery delay on top of 3 periods
+      silence_ms: Keyword.get(opts, :silence_ms, 3 * hello.step_ms + hello.message_delay_max_ms)
     }
 
     s = %{

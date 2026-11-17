@@ -190,7 +190,7 @@ defmodule RegistrationTest do
       center(:grants,
         clock_pair: cp,
         grant_margin_ms: 1,
-        cap: [budget: 100, delay: 10, step: 5, share: 0.5]
+        cap: [budget: 100, delay: 0.010, step: 0.005, share: 0.5]
       )
 
     a = client(c, campaign, "a", clock_pair: cp)
@@ -210,7 +210,7 @@ defmodule RegistrationTest do
     cp = {_, advance} = clock()
 
     {c, campaign} =
-      center(:grants, clock_pair: cp, cap: [budget: 100, delay: 10, step: 5, share: 0.5])
+      center(:grants, clock_pair: cp, cap: [budget: 100, delay: 0.010, step: 0.005, share: 0.5])
 
     a = client(c, campaign, "a", clock_pair: cp)
     b = client(c, campaign, "b", clock_pair: cp)
@@ -369,7 +369,7 @@ defmodule RegistrationTest do
     cp = clock()
 
     {c, campaign} =
-      center(:grants, clock_pair: cp, cap: [budget: 200, delay: 10, step: 5, share: 0.5])
+      center(:grants, clock_pair: cp, cap: [budget: 200, delay: 0.010, step: 0.005, share: 0.5])
 
     a = client(c, campaign, "a", clock_pair: cp)
     tick(c)
@@ -412,5 +412,111 @@ defmodule RegistrationTest do
     Process.exit(r, :kill)
     Process.sleep(5)
     refute Enum.any?(handles, &PacingClient.bid?/1)
+  end
+
+  # ------------------------------------------------------------------ delivery delay (δ_max)
+
+  defp ctl_opts(extra \\ []),
+    do:
+      Keyword.merge(
+        [budget: 100, horizon: 60, delay: 10, step: 5, prior_mean: 10, eps: 0.01],
+        extra
+      )
+
+  defp start_center(opts) do
+    Process.flag(:trap_exit, true)
+
+    PacingCenter.start_link(
+      Keyword.merge(
+        [
+          campaign: make_ref(),
+          visible_spend: fn -> 0 end,
+          step_ms: 5_000,
+          tick: :manual,
+          authenticate: fn _, _ -> true end
+        ],
+        opts
+      )
+    )
+  end
+
+  test "δ_max: message_delay_max_ms widens the controller's in-flight window" do
+    {:ok, c} = start_center(controller: ctl_opts(), message_delay_max_ms: 2_000)
+    ctl = PacingCenter.info(c).ctl
+    assert ctl.message_delay_max == 2.0
+    # ceil(10 / 5) + ceil(2 / 5) = 3 periods instead of 2
+    assert PacingController.delay_periods(ctl) == 3
+  end
+
+  test "δ_max: inconsistent settings are refused at start" do
+    assert {:error, {%ArgumentError{}, _}} =
+             start_center(
+               controller: ctl_opts(message_delay_max: 1.0),
+               message_delay_max_ms: 2_000
+             )
+
+    assert {:error, {%ArgumentError{}, _}} = start_center(controller: ctl_opts(step: 1))
+  end
+
+  test "δ_max, (b): the grant margin defaults to δ_max; a smaller one or δ_max >= a period is refused" do
+    cap = [budget: 100, delay: 10, step: 5, share: 0.5]
+
+    {:ok, c} =
+      start_center(
+        mode: :grants,
+        controller: {FixedP, 1.0},
+        cap: cap,
+        message_delay_max_ms: 2_000
+      )
+
+    {:ok, _} = PacingCenter.register(c, "me", :any)
+    :ok = PacingCenter.tick(c)
+    assert_receive {:pacing_grant, _, _, _, 50, valid_ms}
+    assert valid_ms == 5_000 - 2_000
+
+    assert {:error, {%ArgumentError{}, _}} =
+             start_center(
+               mode: :grants,
+               controller: {FixedP, 1.0},
+               cap: cap,
+               message_delay_max_ms: 2_000,
+               grant_margin_ms: 1_000
+             )
+
+    assert {:error, {%ArgumentError{}, _}} =
+             start_center(
+               mode: :grants,
+               controller: {FixedP, 1.0},
+               cap: cap,
+               message_delay_max_ms: 5_000
+             )
+  end
+
+  test "δ_max, (b): a grant that arrives δ late still ends before its period does" do
+    cp = {_, advance} = clock()
+
+    {c, campaign} =
+      center(:grants,
+        clock_pair: cp,
+        message_delay_max_ms: 2,
+        cap: [budget: 100, delay: 0.010, step: 0.005, share: 0.5]
+      )
+
+    a = client(c, campaign, "a", clock_pair: cp)
+
+    # the grant reaches the client 2 ms (= δ_max) after the center sent it at t = 0
+    :sys.suspend(a)
+    tick(c)
+    advance.(2)
+    :sys.resume(a)
+    # usable until arrival + (5 - 2) = 5 ms: the end of its period, not later
+    assert PacingClient.info(a).valid_until == 5
+  end
+
+  test "δ_max: clients wait 3 periods plus δ_max before treating silence as a stop" do
+    cp = clock()
+    {c, campaign} = center(:broadcast, clock_pair: cp, message_delay_max_ms: 4)
+    a = client(c, campaign, nil, clock_pair: cp)
+    assert PacingClient.info(a).h.silence_ms == 3 * 5 + 4
   end
 end
