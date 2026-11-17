@@ -80,7 +80,7 @@ during that step**. Unused tokens expire. It never grants more than
 
 where S_obs is the spend visible in the budget, as in [system.md](system.md).
 
-**Proof.** The spend delay d is fixed (answer A in [INITIALMODEL.md](INITIALMODEL.md)). So the spend from
+**Proof.** The spend delay d is fixed (answer A in [initialmodel.md](initialmodel.md)). So the spend from
 every step older than d is already in S_obs, and the only spend not yet visible
 comes from the steps of the last d seconds. Each of those steps spent at most
 the tokens it was granted. Hence
@@ -139,7 +139,9 @@ good default.**
 ## 5. Results
 
 Default scenario, 20,000 runs per row, plain pacing with the cap. Full table in
-[results/token-cap-b.md](../results/token-cap-b.md).
+[results/token-cap-b.md](../results/token-cap-b.md). "60 s end-game": pacing plans
+to finish the spend 60 s before T and then approaches B with a small p
+([implementation.md](implementation.md#the-end-game)).
 
 | r | (b) share 0.5 | (b) share 0.5 + 60 s end-game | (b) headroom 1.5 | (a) failure reports, d_f = 30 s |
 |---|---|---|---|---|

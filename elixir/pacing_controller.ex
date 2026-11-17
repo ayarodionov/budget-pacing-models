@@ -6,7 +6,7 @@ defmodule PacingController do
   A port of `BayesRiskController` in `src/pacing/controllers.py`, for one
   campaign (the Python version runs many simulated campaigns at once). The model
   is in `models/probabilistic.md`; how k is estimated and how the pace is
-  calculated is in `models/IMPLEMENTATION.md`.
+  calculated is in `models/implementation.md`.
 
   ## Usage
 

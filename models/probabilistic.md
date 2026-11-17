@@ -4,7 +4,7 @@ The center's strategy that keeps P(overspend) ≤ ε while spending as much of t
 budget as possible, using only the budget it sees. It builds on
 [system.md](system.md) (configuration, formal model, symbols). How k is
 estimated and how the pace is calculated is explained in
-[IMPLEMENTATION.md](IMPLEMENTATION.md) §1–2.
+[implementation.md](implementation.md) §1–2.
 
 Code: `src/pacing/controllers.py` (`BayesRiskController`), Elixir port
 [`elixir/pacing_controller.ex`](../elixir/pacing_controller.ex) · simulation:
@@ -18,30 +18,118 @@ Code: `src/pacing/controllers.py` (`BayesRiskController`), Elixir port
 B/c of them, and S_obs/c of them are visible. In the formulas below, B and S_obs
 are these counts. With c = 1, the default, they are the budget units.
 
+**What the center knows at time t** ([system.md](system.md) §2):
+
+- **S_obs**: the spend visible in the budget, everything up to t − d.
+- **E**, the *exposure* behind S_obs: E = ∫ p ds over the same period, up to
+  t − d. It counts seconds at full throttle: p = 0.014 for 570 s gives
+  E ≈ 8 s. The center knows E exactly, because it set p itself. So k ≈ S_obs / E.
+- **W**, the *in-flight exposure*: ∫ p ds over the last d seconds, whose spend
+  has happened but is not visible yet. The risk check uses it.
+
+(With a delivery delay of p, the split point moves back by ceil(δ_max/Δ)
+periods: [system.md](system.md) §6.)
+
 At every control step:
 
-1. **Estimate k.** Use the posterior k ~ Gamma(α, β). Before any spend is visible,
-   α and β come from the center's rough guess (`prior_mean`). After that,
-   α = 1 + S_obs and β = E (flat prior). Details: [IMPLEMENTATION.md §1](IMPLEMENTATION.md#1-how-k-is-estimated).
+1. **Estimate k.** k is estimated as a whole distribution, the posterior
+   k ~ Gamma(α, β), not as a single number. The data alone say: likelihood of
+   k ∝ k^S_obs · e^(−k·E).
+   - **Once spend is visible (S_obs > 0 and E > 0):** α = 1 + S_obs, β = E.
+     This is the *flat prior* posterior. A flat prior gives every value of k the
+     same weight, so the estimate comes from the data only, and the center's
+     initial guess cannot bias it. Its mean is about S_obs / E. Its upper tail
+     equals the exact (Garwood) upper confidence bound for a Poisson rate, so
+     the risk check never understates how large k could be. (The usual update
+     Gamma(a₀ + S_obs, b₀ + E) would keep the guess forever; a guess 5× too low
+     then overspent 2.6 % of runs against ε = 2 %.)
+   - **Before that:** the data say nothing yet, so α and β come from the
+     center's rough guess `prior_mean`, weighted as `prior_shape` = 2 spends.
+
+   Pacing (step 2) uses the mean, k̂ = α/β. The risk check (step 3) uses the
+   whole distribution. Details: [implementation.md §1](implementation.md#1-how-k-is-estimated).
+
+   *Garwood bound.* The standard exact confidence bound for a Poisson rate
+   (Garwood, 1936). After n events in exposure E, the upper bound at level 1 − α
+   is the rate u at which seeing n or fewer events has probability α:
+   u = Gamma⁻¹(1 − α; shape n + 1) / E. It never understates the rate,
+   unlike the shortcut mean + z·√mean: with n = 100 at 99.9 % the shortcut gives
+   130.9 and the exact bound 134.9; with n = 0 the shortcut gives 0 and the exact
+   bound 3.0 at 95 % (the "rule of three"). The flat-prior posterior
+   Gamma(1 + n, E) has exactly these quantiles.
 2. **Pace.** Spend the expected remaining budget evenly over the remaining planning time:
 
        p_pace = (B − S_obs − k̂·W) / (k̂ · (T − endgame − t)),    clipped to [0, 1]
 
-   Details: [IMPLEMENTATION.md §2](IMPLEMENTATION.md#2-how-the-pace-is-calculated).
+   `endgame` is optional (0 by default). With it, pacing aims to finish the
+   planned spend `endgame` seconds before T. In the remaining time pacing asks
+   for everything left, so the risk check (step 3) alone sets p and creeps up to
+   B in small steps. This leaves less budget unspent at T, at the cost of less
+   even spending (§3, item 4). Details:
+   [implementation.md §2](implementation.md#2-how-the-pace-is-calculated) and
+   [the end-game](implementation.md#the-end-game).
 
-3. **Check the risk and cap p.** Given k, the committed spend beyond S_obs is
-   Poisson(k·(W + pΔ)). Mixed over the Gamma posterior, it is negative-binomial,
-   so its tail has a closed form (an incomplete beta function). Compute
-   - q₀ = P(in-flight spend > B − S_obs): the risk already locked in, and
-   - q₁(p) = the same probability with the next step's spend pΔ added.
+3. **Check the risk and cap p.** Pacing says how fast the center *wants* to
+   spend. This step asks how fast it *may* spend, and lowers p if needed.
 
-   Then use the largest p ≤ p_pace whose added risk satisfies
-   q₁(p) − q₀ ≤ η_Δ·(ε − risk_used), and add q₁ − q₀ to risk_used.
+   **The danger.** The budget left on the books is B − S_obs. But some spend is
+   already committed and not visible yet: the spend in flight (exposure W), plus
+   whatever the next period adds (exposure p·Δ). If that hidden spend turns out
+   larger than B − S_obs, the campaign overspends, and nothing can undo it.
 
-   η is the share of the unused risk budget that may be used **per 5 seconds**,
-   so one step may use η_Δ = 1 − (1 − η)^(Δ/5 s). An earlier version applied η
-   per *step*. With a short Δ, that version used up its risk budget faster in
-   real time and stopped too early, so Δ = 1 s did worse than Δ = 5 s.
+   **The probability of that.** The hidden spend is random. For a known k it is
+   Poisson with mean k·(W + p·Δ). The center does not know k exactly, so it
+   averages over its Gamma distribution of k from step 1. The result is a
+   negative-binomial distribution, whose tail has a closed formula (an
+   incomplete beta function). Two tail probabilities are computed:
+
+   - **q₀ = P(spend in flight > B − S_obs).** The risk already locked in by past
+     decisions. Nothing can change it now, not even p = 0.
+   - **q₁(p) = P(spend in flight + next period's spend > B − S_obs).** The risk
+     if the next period runs at p. It grows with p, and q₁(0) = q₀.
+
+   The difference q₁(p) − q₀ is the risk that *this decision* adds.
+
+   **The risk budget.** The center may add risk, but only ε in total over the
+   whole campaign. ε works like a second budget, counted in probability instead
+   of money, and **risk_used** is its ledger: the running sum of the risk added
+   by all decisions so far. It starts at 0, only grows, and never exceeds ε, so
+   ε − risk_used is the allowance still left. For most of the campaign it stays
+   practically 0; it grows near the end and typically finishes just under ε
+   (for example 0.00097 with ε = 0.001). In one step the center may spend only a
+   share of what is left:
+
+       q₁(p) − q₀  ≤  η_Δ · (ε − risk_used)
+
+   - If p_pace satisfies this, use p = p_pace.
+   - If not, use the largest p that does (found by bisection, since q₁ grows
+     with p).
+   - Then add q₁(p) − q₀ to risk_used.
+
+   Because the sum of all added risks never exceeds ε, the probability of
+   overspend over the whole campaign is at most ε (§2).
+
+   **Example** (ε = 10⁻³, default numbers, near the end). The budget shows
+   S_obs = 4930, so 70 units are left. About 42 units are in flight. Then
+   q₀ ≈ 3·10⁻⁵: the in-flight spend alone exceeding 70 is very unlikely. Suppose
+   risk_used = 2·10⁻⁴, so this step may add at most 0.5 × (10⁻³ − 2·10⁻⁴) =
+   4·10⁻⁴. Pacing asks for p = 0.0139, which would bring the expected hidden
+   spend to 49 units and add a risk of 1.9·10⁻³: too much. The largest p that
+   adds only 4·10⁻⁴ is p ≈ 0.0082 (46 units expected), so that is what the
+   center sends.
+
+   **When the check matters.** For most of the campaign B − S_obs is far larger
+   than anything in flight, both tails are practically zero, and p = p_pace.
+   The check starts to bind only near the end, when the budget left becomes
+   comparable to the spend in flight. From then on p shrinks step by step.
+
+   **The share η.** Spending the whole remaining risk budget in one step would
+   leave nothing for later steps, so each step may use only a share. η is the
+   share of the unused risk budget that may be used **per 5 seconds** (0.5 by
+   default), so one step of length Δ may use η_Δ = 1 − (1 − η)^(Δ/5 s). Defining
+   it per unit of time keeps the behaviour the same when Δ changes. (An earlier
+   version applied η per *step*; with a short Δ it used up its risk budget
+   faster in real time and stopped too early, so Δ = 1 s did worse than Δ = 5 s.)
 4. **Send or keep** (only if a broadcast threshold is set). If the new p is within
    the threshold of the p that clients already use, *and* that old p also passes
    the risk check in step 3, keep the old p and send nothing. Otherwise send the
@@ -65,9 +153,24 @@ tail equal to the exact Garwood confidence bound. In simulation it stays at or
 below ε even when the initial guess is wrong by 10× in either direction. This part
 is verified empirically, not proved.
 
+**Why the charge is the difference q₁ − q₀, not q₁.** At a step, q₀ is the risk
+carried over from earlier decisions; it was charged when they were made. q₁
+includes it. Only q₁ − q₀ is new: the extra risk from choosing p instead of
+stopping. Charging the whole q₁ would count the carried risk again at every
+step. For example, with q₁ = 2·10⁻⁴ at one step and q₀ ≈ 2·10⁻⁴, q₁ = 3·10⁻⁴ at
+the next, charging q₁ gives 5·10⁻⁴, while the true risk so far is 3·10⁻⁴; the
+differences give 2·10⁻⁴ + 1·10⁻⁴ = 3·10⁻⁴. Over hundreds of steps the double
+counting would use up ε at once, and the controller would stop far too early.
+
+One subtlety: q₀ at a step is not literally the q₁ of the step before, because
+new spend has become visible in between and the center recalculates. Good news
+lowers q₀, bad news raises it. On average the two are equal, because the old q₁
+was already the best prediction of the new q₀. That is why the formula has an
+expectation, and why charging the differences is exact, not an approximation.
+
 **Why checking ε at each step is not enough.** If you check
 "P(in-flight > remaining) ≤ ε" at every step, as a fixed-reserve rule does, the
-risk adds up over the end-game steps. In the comparison below, that rule
+risk adds up over the last steps of the campaign. In the comparison below, that rule
 overspends 2.6× more often than ε.
 
 ## 3. Results (default: B = 5000, T = 1 h, k = 100/s, d = 30 s, Δ = 5 s, ε = 10⁻³)
@@ -106,7 +209,7 @@ What the results show:
    planned spend a little early and then creeping up to B with a small p halves
    the underspend. A 30–60 s end-game already gets most of the gain for a small
    loss of evenness. How the end-game works and why it helps:
-   [IMPLEMENTATION.md](IMPLEMENTATION.md#the-end-game).
+   [implementation.md](implementation.md#the-end-game).
 
    ![End-game time: evenness against underspend](../results/endgame.png)
 
@@ -207,7 +310,7 @@ What the results show:
 - **Optimality.** The controller is greedy for each step. It is not the solution
   of the full dynamic programme. It does match the known-k oracle, and the
   remaining gap is the delay noise that any steadily-pacing strategy has.
-  Solving the dynamic programme for the end-game would tell how much more is
-  possible.
+  Solving the dynamic programme for the final phase of the campaign would tell
+  how much more is possible.
 - **Sensitivity to the traffic model.** The ε guarantee assumes Poisson traffic
   and a fixed delay ([system.md](system.md) §3 and §7).

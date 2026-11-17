@@ -30,7 +30,7 @@ The controller, the cap and the math are line-by-line ports of the Python refere
 `src/pacing/specfun.py`, `src/pacing/backstop.py`). The math is tested against
 scipy, and the controller and the token cap against recorded traces of the
 Python simulations. The controller logic is explained in
-[IMPLEMENTATION.md](../models/IMPLEMENTATION.md) and
+[implementation.md](../models/implementation.md) and
 [../models/probabilistic.md](../models/probabilistic.md).
 
 ## Files
@@ -91,7 +91,7 @@ see [system.md §6](../models/system.md#push-or-pull)), `max_rise` (p may grow
 by at most this factor per spend delay d; 1.5 bounds the damage of a delay
 nobody planned for to about 1 % of B and costs nothing otherwise), `unit_cost` (c, budget
 units per realised token), `endgame`
-(seconds; see [IMPLEMENTATION.md](../models/IMPLEMENTATION.md#the-end-game)),
+(seconds; see [implementation.md](../models/implementation.md#the-end-game)),
 `broadcast_threshold`, `eta`, `eta_period`, `prior_shape`, `known_rate`,
 `flat_after_data` and `math: PacingMathNif`. They match the Python controller;
 the module doc lists them all.
@@ -288,7 +288,7 @@ mostly near the end of the campaign, when the cap binds.
 | `log1p(x)` | ln(1 + x), accurate for small x (`PacingMath` only; `:math` has none) |
 
 `m` is a count of spends; non-integer values are rounded down. Divide budget
-amounts by the cost per spend c first (see [IMPLEMENTATION.md](../models/IMPLEMENTATION.md),
+amounts by the cost per spend c first (see [implementation.md](../models/implementation.md),
 *Units*).
 
 ```elixir
@@ -363,7 +363,7 @@ the worst case, 67 µs, is about 0.001 % of a core. The NIF pays off only with r
 more campaigns deciding every second, and it brings costs: a C bug can crash
 the whole node, it must be built for every target, and it is harder to review.
 The modules share an API, so switching later is a one-line change. Details:
-[IMPLEMENTATION.md §3](../models/IMPLEMENTATION.md#pure-elixir-or-a-nif).
+[implementation.md §3](../models/implementation.md#pure-elixir-or-a-nif).
 
 ## Using it in a Mix project
 

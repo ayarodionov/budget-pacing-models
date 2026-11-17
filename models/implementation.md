@@ -82,7 +82,10 @@ The usual Bayesian update would keep the guess forever as α = a₀ + S_obs,
 campaign. The tests caught exactly this: overspend 2.6 % against ε = 2 % with a
 5× too-low guess. The flat-prior posterior Gamma(1 + S_obs, E) depends on the
 data only. Its upper tail equals the exact (Garwood) upper confidence bound for a
-Poisson rate, so it does not understate how large k could be.
+Poisson rate, so it does not understate how large k could be. (The Garwood bound
+after n events in exposure E is u = Gamma⁻¹(1 − α; shape n + 1) / E: the rate at
+which seeing n or fewer events has probability α. See
+[probabilistic.md](probabilistic.md) §1, step 1.)
 
 **Two ways the estimate is used:**
 - **Pacing** uses the mean k̂ = α/β. Its job is to aim the spend at B, and

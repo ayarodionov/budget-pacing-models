@@ -5,7 +5,7 @@ through a probability p that it sends to an unknown number of clients. Spend sho
 up in the budget after a delay. The goal is to spend as much of the budget as
 possible without overspending.
 
-Problem statement and clarifications: [models/INITIALMODEL.md](models/INITIALMODEL.md).
+Problem statement and clarifications: [models/initialmodel.md](models/initialmodel.md).
 
 ## Models
 
@@ -51,7 +51,7 @@ Table: [results/overview.md](results/overview.md).
 
 ## Implementation
 
-- [models/IMPLEMENTATION.md](models/IMPLEMENTATION.md): how the spend rate k is estimated, how
+- [models/implementation.md](models/implementation.md): how the spend rate k is estimated, how
   the pace is calculated, and how to compute the special functions without a
   numerics library.
 - [elixir/README.md](elixir/README.md): the Elixir implementation. The

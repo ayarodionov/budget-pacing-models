@@ -162,7 +162,9 @@ What the formula shows:
 - **Longer campaigns help.** The cost falls like 1/T.
 - **Slowing down at the end helps.** A lower pace just before T means fewer
   unreported failures when the budget runs out. That is why the 60 s end-game
-  improves the cap's cost (§5).
+  improves the cap's cost (§5). The end-game is an option of the pacing rule:
+  plan to finish the spend that many seconds before T, then approach B with a
+  small p ([implementation.md](implementation.md#the-end-game)).
 
 ## 5. Simulation results
 
