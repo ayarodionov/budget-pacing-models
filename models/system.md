@@ -122,7 +122,7 @@ total over B.
 | ε | allowed probability of overspend | yes (chosen) |
 | λ | rate of bid requests (steady Poisson) | **no** |
 | r | probability that a token turns into budget spend (stable) | **no** |
-| N | number of clients | **no** |
+| N | number of clients | **no** for the probabilistic controller; the token caps learn it through registration (§5) |
 | k | k = λ·r, realised tokens (spends) per second at p = 1; actual spend rate is c·k·p units/s (the only unknown the center needs; see [implementation.md §1](implementation.md#1-how-k-is-estimated)) | **no**, but estimated from the budget |
 | p | token probability broadcast to all clients; takes effect after δ (immediately in the base model) | it sets it |
 
@@ -148,7 +148,8 @@ realised tokens in an interval of length Δ with constant p is
 
 and the spend is c·X units, whatever N is and however requests are split between
 clients. The center does not need N, λ or r separately, only the single number k,
-and it can learn k from its own budget.
+and it can learn k from its own budget. (This is about the math; the token caps
+still need clients to register in order to hand out tokens, see §5.)
 
 **Counting in spends.** Since spend = c·X, it is enough to count in spends:
 the budget holds B/c of them, and overspend means more than B/c spends in total.
@@ -270,25 +271,48 @@ budget held by tokens whose outcome is not yet known, roughly
 
 ## 5. Is the number of clients needed?
 
-**No, not in anything modelled here.**
+**It depends on the model.** The probabilistic controller never needs N. The
+token caps need to know their clients, though not for their safety:
 
-- **Main model and controller.** Each request goes to one random client, and all
+| Model | Does the center know N? | Is N needed for the math and the guarantee? | Is N needed to run it? |
+|---|---|---|---|
+| Probabilistic controller | **no** | **no** | **no**: p is broadcast to subscribers |
+| Token cap (a) | **yes**, through registration | **no**: the rule counts total tokens | **yes**: tokens go into the wallets of registered clients |
+| Token cap (b) | **yes**, through registration | **no**: the rule counts total tokens | **yes**: each grant is split among the registered clients |
+
+- **Probabilistic controller.** Each request goes to one random client, and all
   clients bid with the same p. Splitting a Poisson stream at random and then
   thinning it keeps it Poisson, so total spend is Poisson(k·p) for any N (see
-  §2, *Reduction*). N appears in each client's share and cancels when the shares are
-  added. `test_number_of_clients_does_not_matter` checks this with 1, 7 and
-  500 clients.
-- **Token cap, versions (a) and (b)** ([token-cap-a.md](token-cap-a.md),
-  [token-cap-b.md](token-cap-b.md)). Both
-  rules limit the *total* number of tokens, through tokens used and failures
-  reported, or through tokens granted and the budget. Neither the rules nor the
-  proofs mention N.
+  §2, *Reduction*). N appears in each client's share and cancels when the shares
+  are added. `test_number_of_clients_does_not_matter` checks this with 1, 7 and
+  500 clients. Point 9 of the problem statement, "the center does not know the
+  number of clients", holds as stated.
+- **Token caps, versions (a) and (b)** ([token-cap-a.md](token-cap-a.md),
+  [token-cap-b.md](token-cap-b.md)). The rules and their proofs use only totals:
+  tokens handed out and failures reported in (a), tokens granted and the budget
+  in (b). N appears in neither, so the guarantee holds for any number of
+  clients, and for any split of the tokens among them. But a token is
+  permission held by a *specific* client, so tokens must be delivered to
+  someone. That needs registration (§6): clients identify themselves and keep a
+  lease alive. As a side effect the center learns its live clients, and their
+  count is its N. **So with a token cap, point 9 of the problem statement no
+  longer holds:** the center knows the number of clients, because the mechanism
+  requires them to register.
+  - In (a) the center uses N only for wallet sizes: near the end a top-up gives
+    at most a share of what is left per live client (`wallet_share`).
+  - In (b) the center uses N only to split each grant.
+  - In both, a wrong count costs underspend, never overspend: a dead client's
+    tokens expire or stay counted, and a new client waits for its first
+    tokens. Version (b) can even avoid counting clients altogether, by putting
+    each step's grant in a pool that clients draw from
+    ([token-cap-b.md](token-cap-b.md) §1); the clients still have to be
+    authenticated, because whoever draws from the pool draws budget.
 
 **Where N would start to matter:**
 
 | Extension | Why | Does the center need N? |
 |---|---|---|
-| Tokens held in per-client wallets (leases of L tokens) | up to about N·L tokens can sit unused when the budget runs out, and that budget is lost | helpful, not required. The center learns how many clients hold leases from the lease requests. Shrinking leases near the end works without N. |
+| Tokens held in per-client wallets (leases of L tokens) | up to about N·L tokens can sit unused when the budget runs out, and that budget is lost | the center knows N from the leases anyway (token cap (a)); it uses N to shrink each top-up near the end (`wallet_share`) |
 | Safety from a per-client rate limit (at most m bids/s per client) | worst-case in-flight spend is N·m·(d + Δ) | **yes**. This is one reason to prefer the token cap. |
 | Clients that differ (acceptance probability, cost per bid) | one broadcast p no longer fits all, and the spend rate depends on the mix of clients | possibly, or at least the mix of client types |
 | Requests that do not arrive independently (for example one request reaching several clients) | the random-split argument fails, and N can change the variance of spend | possibly |
@@ -307,8 +331,8 @@ Whether the center must know its clients depends on the model:
 | Token cap (a) | hand out tokens; receive used and failed counts | **yes**: clients *register* and hold leases |
 | Token cap (b) | hand out each period's grant | **yes**, to split the grant; nothing comes back |
 
-The models' math does not change: k is still learned from the budget alone, and
-N is still not needed (§5). What this section adds are the rules that keep the
+The models' math does not change: k is still learned from the budget alone,
+and no formula needs N (§5); registration only delivers the tokens. What this section adds are the rules that keep the
 guarantees true when clients join, leave, crash or lose contact.
 
 ### Probabilistic controller: subscription
