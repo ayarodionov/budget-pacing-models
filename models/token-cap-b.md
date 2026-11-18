@@ -55,6 +55,41 @@ With d = 30 s and steps of 5 s, the window holds the last 6 grants.
    G = ⌈s·A⌉ with s = 0.5, "grant half of what is free" (§4).
 5. **Add G to the window** and send it to the clients together with p.
 
+**G is the total for all clients, not per client.** The center splits each
+grant among the live clients, as evenly as possible, and the parts always add up
+to exactly G: with G = 25 and N = 5 clients, each gets 5. (If every client got
+the full G, the total would be N·G and overspend would become possible.)
+
+**How the center knows whom to split among.** In version (b) clients
+*register* and keep their lease alive with heartbeats
+([system.md](system.md) §6), so the center knows its live leases; that count is
+its N. (Only the probabilistic controller works without knowing the clients:
+there p is broadcast to subscribers.) The list is needed only to *deliver* the
+grant. The guarantee uses totals only, so the list need not be exact: a client
+that died before its lease expired lets its share expire unused, and a client
+that joins mid-step gets tokens from the next step on. Both cost underspend,
+never overspend. Any split is safe as long as the parts add up to at most G.
+
+An even split by lease is one choice, not a requirement. Alternatives that never
+count clients keep the guarantee too:
+
+- **a token pool:** the center puts G tokens of the step in a pool, and clients
+  draw small batches as they need them, as with the top-ups of version (a) but
+  expiring at the end of the step. This also avoids the cost of an even split,
+  where an idle client lets its share expire while a busy one runs out;
+- **per node:** the center grants to each node, and a process on the node hands
+  the tokens to its local bidders, as `PacingRelay` does for p.
+
+**A token caps bids; p does not multiply it.** p decides how many requests a
+client *wants* to bid on; each bid needs a token. So in one step a client makes
+
+    bids = min( requests that pass the p-coin ,  tokens it holds )
+
+p can only push the bids below the token count, never above it. Even at p = 1,
+all clients together bid at most G times in a step, and at most the sum of the
+grants in the window over the last d seconds, which is exactly what the
+allowance subtracts.
+
 ### What a client does
 
 - **When a grant arrives:** it replaces whatever the client held; the old
