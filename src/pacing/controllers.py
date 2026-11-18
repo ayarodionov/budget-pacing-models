@@ -139,8 +139,19 @@ class _Pacer:
             beta = np.where(seen, observed_exposure, beta)
         return alpha, beta, alpha / beta
 
+    def _plan_exposure(self, t: float) -> float:
+        """Exposure left to plan with at p = 1: here the time left (constant traffic).
+
+        Subclasses with a traffic profile return the remaining profile integral.
+        """
+        return max(self.view.horizon - self.endgame_time - t, self.view.step)
+
+    def _rate_factor(self, t: float) -> float:
+        """Traffic of the coming step relative to the level k; 1 for constant traffic."""
+        return 1.0
+
     def _pace(self, t: float, to_spend: np.ndarray, k_est: np.ndarray) -> np.ndarray:
-        plan_left = max(self.view.horizon - self.endgame_time - t, self.view.step)
+        plan_left = self._plan_exposure(t)
         return np.clip(to_spend / (k_est * plan_left), 0.0, 1.0)
 
 
@@ -252,6 +263,10 @@ class BayesRiskController(_Pacer):
         self.p_last = np.zeros(n_runs)  # clients start with p = 0 (nothing sent yet)
         self.broadcasts = np.zeros(n_runs, dtype=np.int64)
 
+    def _risk_posterior(self, observed_spend, observed_exposure, alpha, beta):
+        """Distribution of k for the risk check; by default the same as for pacing."""
+        return alpha, beta
+
     def _tail(self, remaining, alpha, beta, exposure):
         if self.known_rate is not None:
             return poisson_tail(remaining, self.known_rate * exposure, self.tails)
@@ -262,13 +277,15 @@ class BayesRiskController(_Pacer):
         alpha, beta, k_est = self._posterior(observed_spend, observed_exposure)
         if self.known_rate is not None:
             k_est = np.full_like(k_est, self.known_rate)
-        dt = self.view.step
         w = inflight_exposure
+        # pacing uses k_est; the risk check may use its own distribution of k
+        alpha, beta = self._risk_posterior(observed_spend, observed_exposure, alpha, beta)
 
         p = self._rise_cap(self._pace(t, remaining - k_est * w, k_est))
         q0 = self._tail(remaining, alpha, beta, w)  # risk already locked in
         allow = self.eta_step * np.clip(self.eps - self.risk_used, 0.0, None)
-        h = self.horizon  # how long this p may run: one step, or the silence limit
+        # how long this p may run (one step, or the silence limit), times the traffic
+        h = self.horizon * self._rate_factor(t)
         q1 = self._tail(remaining, alpha, beta, w + p * h)
 
         bad = (q1 - q0) > allow

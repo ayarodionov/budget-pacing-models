@@ -57,6 +57,9 @@ def simulate_with_backstop(
     silence_limit: float | None = None,
     wallet: int | None = None,
     wallet_share: float | None = 0.5,
+    rate_profile: np.ndarray | None = None,
+    center_profile: np.ndarray | None = None,
+    target: np.ndarray | None = None,
 ) -> BackstopResult:
     """Token-level simulation. ``cap=False`` gives the same process without the backstop.
 
@@ -80,6 +83,9 @@ def simulate_with_backstop(
     center does not know and keeps deciding. (a): clients can use only the tokens
     they already hold. (b): no grant arrives, so no bids; after t1 the next grant
     replaces any old one, so a clean reconnect cannot spill.
+
+    ``rate_profile``, ``center_profile``, ``target``: traffic that varies, as in
+    ``pacing.model.simulate``.
 
     ``wallet`` (version (a)): clients hold up to this many tokens in total, handed
     out ahead of use and counted as used when handed out; each top-up gives at most
@@ -121,6 +127,9 @@ def simulate_with_backstop(
     stale = scn.message_age_limit is not None and scn.message_delay > scn.message_age_limit
     if link_outage is not None and not instant:
         raise ValueError("link_outage is simulated with immediate delivery only")
+    if (rate_profile is not None or center_profile is not None) and not instant:
+        raise ValueError("traffic profiles are simulated with immediate delivery only")
+    cf = center_profile
     lo0, lo1 = (math.ceil(t / dt - 1e-9) for t in link_outage) if link_outage else (math.inf, math.inf)
     silence = silence_limit if silence_limit is not None else 3 * dt + scn.message_delay_max
     p_kept = np.zeros(n_runs)
@@ -157,7 +166,10 @@ def simulate_with_backstop(
         if cut:
             # the last received p runs until the silence limit, then p = 0
             p_clients = p_kept if (i - (lo0 - 1)) * dt < silence else np.zeros(n_runs)
-        if instant:
+        if instant and rate_profile is not None:
+            def bids(lo, hi):  # noqa: E306  traffic that varies
+                return rng.poisson(lam * p_clients * dt * rate_profile[i])
+        elif instant:
             def bids(lo, hi):  # noqa: E306  bids the clients want during [lo, hi) of this step
                 return rng.poisson(lam * p_clients * dt)
         else:
@@ -239,9 +251,9 @@ def simulate_with_backstop(
         if grant is not None:
             ring_g[:, slot] = grant
             granted_unresolved += grant
-        ring_p[:, i % pring] = p_eff
+        ring_p[:, i % pring] = p_eff if cf is None else p_eff * cf[i]
         ring_x[:, slot] = x
-        inflight += p_eff * dt
+        inflight += ring_p[:, i % pring] * dt
         fslot = i % fring
         ring_f[:, fslot] = tokens - x
 
@@ -277,7 +289,8 @@ def simulate_with_backstop(
                           "grant": None if grant is None else int(grant[0]),
                           "tokens": int(tokens[0]), "failures_reported": int(reported[0])})
 
-        dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)
+        aim = (i + 1) / n_steps if target is None else target[i]
+        dev = np.abs(true_spend / scn.budget_events - aim)
         np.maximum(max_dev, dev, out=max_dev)
 
     return BackstopResult(

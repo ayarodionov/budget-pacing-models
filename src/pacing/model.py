@@ -171,6 +171,9 @@ def simulate(
     feed_outage: tuple[float, float] | None = None,
     halt_on_stale_feed: float | None = None,
     center_pmf: np.ndarray | None = None,
+    rate_profile: np.ndarray | None = None,
+    center_profile: np.ndarray | None = None,
+    target: np.ndarray | None = None,
 ) -> SimResult:
     """Run ``n_runs`` independent replications of one campaign in parallel.
 
@@ -198,6 +201,12 @@ def simulate(
     probability that a spend shows up after 0, 1, 2, ... steps (see ``delay_pmf``).
     E = sum of p * step * G(age) and W = sum of p * step * (1 - G(age)), where G is
     the cumulative of ``center_pmf``.
+
+    Traffic that varies (see ``pacing.seasonal``): ``rate_profile[i]`` multiplies
+    the request rate in step i (the truth). ``center_profile[i]`` is what the
+    center believes it is: its exposure counts p * step * center_profile[i].
+    ``target[i]`` is the share of the budget that should be spent by the end of
+    step i (default: even in time); ``max_pace_deviation`` is measured against it.
     """
     rng = np.random.default_rng(seed)
     k = (
@@ -227,6 +236,10 @@ def simulate(
         hist = max(hist, lc + 1)
         e_full = np.zeros(n_runs)  # exposure of steps old enough to be surely visible
     ring_p = np.zeros((n_runs, hist))
+    if (rate_profile is not None or center_profile is not None) and (
+            scn.message_delay or center_pmf is not None):
+        raise ValueError("traffic profiles are simulated with a fixed spend delay and no delivery delay")
+    cf = center_profile  # the center's belief about the traffic of each step
 
     obs_spend = np.zeros(n_runs, dtype=np.int64)
     obs_exposure = np.zeros(n_runs)
@@ -270,7 +283,9 @@ def simulate(
         if lo0 <= i < lo1:
             # cut off: the last received p runs until the silence limit, then p = 0
             p_clients = p_kept if (i - (lo0 - 1)) * dt < silence else np.zeros(n_runs)
-        if scn.message_delay == 0:
+        if rate_profile is not None:
+            x = rng.poisson(k * p_clients * dt * rate_profile[i])
+        elif scn.message_delay == 0:
             x = rng.poisson(k * p_clients * dt)
         else:
             # clients use the p decided m_steps (+ a fraction) ago
@@ -293,17 +308,26 @@ def simulate(
             obs_spend += vis_ring[:, i % r_len]
             vis_ring[:, i % r_len] = 0
 
-        if center_pmf is None:
+        if center_pmf is None and cf is None:
             inflight += p * dt
             j = i - cd_steps  # the center stops counting this decided p as in flight
             if j >= 0:
                 obs_exposure += ring_p[:, j % hist] * dt
                 inflight -= ring_p[:, j % hist] * dt
                 np.maximum(inflight, 0.0, out=inflight)
+        elif center_pmf is None:
+            # exposure weighted by the traffic the center believes each step had
+            inflight += p * dt * cf[i]
+            j = i - cd_steps
+            if j >= 0:
+                obs_exposure += ring_p[:, j % hist] * dt * cf[j]
+                inflight -= ring_p[:, j % hist] * dt * cf[j]
+                np.maximum(inflight, 0.0, out=inflight)
         elif i - lc >= 0:
             e_full += ring_p[:, (i - lc) % hist] * dt
 
-        dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)
+        aim = (i + 1) / n_steps if target is None else target[i]
+        dev = np.abs(true_spend / scn.budget_events - aim)
         np.maximum(max_dev, dev, out=max_dev)
         if keep:
             traj_spend[:, i + 1] = c * true_spend[:keep]
