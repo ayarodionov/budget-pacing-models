@@ -77,6 +77,55 @@ flowchart LR
     CTR ==>|"p and token allowance"| CL
 ```
 
+### When the client's tokens decrease
+
+In a real deployment each client holds a small **wallet** of tokens. (The
+simulation treats all clients as one shared pool; with wallets topped up on
+demand the results are the same, see §7.) The wallet goes **up** only by a
+top-up from the center: when it runs empty, the client asks for more, and the
+center gives at most `wallet_size` tokens, and near the end of the campaign at
+most its share of what is left. A token counts as *used* at the center from the
+moment it is handed out.
+
+The wallet goes **down** in exactly three cases:
+
+| When | What happens | Why |
+|---|---|---|
+| **A bid is made** (the p-coin says yes and a token is left) | −1 | a bid needs a token; this is what limits spend |
+| **The lease runs out** (no renewal acknowledged within the lease time) | the whole wallet is dropped; the client remembers the tokens as unused and reports them when it registers again, and the center then frees them | a client that has lost contact must stop, and the center must not reuse its tokens before it knows they were not spent |
+| **The client leaves** (`deregister`) | the whole wallet is returned; the center frees it at once | nothing left to spend with |
+
+Unlike version (b), tokens do **not** expire per step: a token stays valid until
+it is used, returned, or the lease runs out.
+
+Things that do **not** change the wallet:
+
+- **A failed bid** keeps its token used. The client reports the failure, and the
+  center then adds that token's budget back to its *allowance*, not to the
+  client's wallet. The budget becomes available to whoever asks for a top-up
+  next.
+- **A blocked bid** (no token, and the center has none to give) uses nothing.
+- **The client never lowers its tokens by choice.** How many it gets is decided
+  by the center: near the end, each top-up gives at most half of the remaining
+  allowance split among the live clients, so wallets shrink.
+
+**Timeline of one client** (wallet size 10, failures reported with the next
+heartbeat):
+
+```
+ t = 0 s    asks for tokens, gets 10        wallet: 10   (center: used +10)
+ t = 0.4 s  bid                              wallet: 9
+ t = 1.1 s  bid (later fails)                wallet: 8    the token stays used
+   …        8 more bids                      wallet: 0
+ t = 6.0 s  next bid: asks for tokens, gets 10  wallet: 10   then bids: 9
+ t = 7.0 s  heartbeat reports 1 failure      wallet: 9    center: allowance +1
+   …        link lost; 2 more bids           wallet: 7    no renewal is acknowledged
+ t = 22 s   lease expired (15 s after the     wallet: 0    7 tokens remembered as unused
+            last renewal at 7 s)
+ t = 30 s   link back: registers again,      wallet: 0    center frees the 7 unused
+            reports the old lease
+```
+
 ## 3. The center's rule and why it guarantees B
 
 The center keeps two counters:

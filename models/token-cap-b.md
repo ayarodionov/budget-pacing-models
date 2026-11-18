@@ -18,10 +18,123 @@ All formulas below count in **spends**, not budget units: B stands for B/c, the
 number of spends the budget can pay for (rounded down), and S_obs for the visible
 spend divided by c. With c = 1, the default, the two are the same.
 
-## 1. Schema
+## 1. How it works
 
-**What flows where.** Compare [token-cap-a.md](token-cap-a.md) §2. There are no arrows from clients back to the
-center: the only feedback is the budget.
+### The idea in plain words
+
+The center cannot see spend for d seconds after it happens. So it treats every
+token it hands out as *possibly spent* until the budget proves otherwise:
+
+1. **Tokens are permission to bid.** A client may bid only while it holds a
+   token, and each bid uses one up.
+2. **Tokens live for one control step.** At the start of each step the center
+   grants a fresh batch; whatever is unused at the end of the step expires.
+3. **A fresh grant counts as fully spent.** For the next d seconds the center
+   assumes the worst: every granted token was used and charged.
+4. **After d seconds the budget tells the truth.** By then all spend from that
+   grant is visible. The center drops the grant from its count and relies on
+   the budget instead. Tokens that expired or whose bids failed cost nothing,
+   so that part of the budget is free again.
+
+Nobody reports anything. A token that expired, or a bid that failed, simply
+never shows up in the budget, and after d seconds the center knows.
+
+### What the center does at the start of every step
+
+The center keeps one list: the grants of the last d seconds (the *window*).
+With d = 30 s and steps of 5 s, the window holds the last 6 grants.
+
+1. **Read the budget:** S_obs, the spend visible now.
+2. **Drop the oldest grant** from the window if it is older than d. Its spend
+   is already inside S_obs.
+3. **Compute the allowance**, the budget that is certainly still free:
+
+       A = B − S_obs − (sum of the grants in the window)
+
+4. **Choose the new grant G ≤ A.** The simple rule is a fixed share:
+   G = ⌈s·A⌉ with s = 0.5, "grant half of what is free" (§4).
+5. **Add G to the window** and send it to the clients together with p.
+
+### What a client does
+
+- **When a grant arrives:** it replaces whatever the client held; the old
+  tokens are gone. The grant is usable until the end of the step.
+- **For each bid request:** flip the p-coin as always. On "yes", bid only if a
+  token is left, and use it up. With no token left, the bid is *blocked*.
+- **At the end of the step:** unused tokens expire. The client reports nothing.
+
+### When the client's tokens decrease
+
+The client holds one number: the tokens left from its current grant, and the
+time until which they are valid. That number goes **up** only when a grant
+arrives. It goes **down** in exactly four cases:
+
+| When | What happens | Why |
+|---|---|---|
+| **A bid is made** (the p-coin says yes and a token is left) | −1 | a bid needs a token; this is what limits spend |
+| **The step ends** (the validity time runs out) | all remaining tokens become unusable | a grant is counted only for its own step; using it later would be spend the center no longer counts |
+| **A new grant arrives** | the old tokens are dropped first, then the new grant is set | so no bid can take an old token under the new validity time |
+| **A grant arrives too old** (age check) | it is ignored; the current tokens run out as above | an old grant may belong to a step that is already over |
+
+Things that do **not** change the count:
+
+- **A failed bid** keeps its token used. Nobody reports the failure; the budget
+  simply never shows a charge for it, and after d seconds the center sees that
+  its budget is free again (see the worked example below).
+- **A blocked bid** (no token left) uses nothing.
+- **The client never lowers its tokens by choice.** How many it gets is
+  decided by the center: the grant is half of the budget that is certainly
+  free, so near the end of the campaign the grants, and with them the client's
+  tokens, shrink step by step.
+
+**Timeline of one client in one step** (Δ = 5 s, margin 0.5 s):
+
+```
+ t = 0 s    grant of 25 arrives          tokens: 25   valid until 4.5 s
+ t = 0.3 s  bid                           tokens: 24
+ t = 0.9 s  p-coin says no                tokens: 24
+ t = 1.4 s  bid (later fails)             tokens: 23   the token stays used
+   …        22 more bids                  tokens: 1
+ t = 4.1 s  bid                           tokens: 0
+ t = 4.3 s  p-coin says yes, no token     tokens: 0    bid blocked
+ t = 4.5 s  validity ends                 tokens: 0 usable
+ t = 5.0 s  next grant of 13 arrives      tokens: 13   valid until 9.5 s
+```
+
+If the step had ended with tokens left, say 6, they would have become unusable
+at 4.5 s and been dropped when the next grant arrived at 5.0 s.
+
+### A worked example
+
+B = 100 spends, the window holds 2 steps (d = 2Δ), share s = 0.5.
+
+| step | S_obs (visible) | window (grants not yet proven) | allowance A | new grant G | what the clients then do |
+|---|---|---|---|---|---|
+| 1 | 0 | none | 100 − 0 − 0 = 100 | 50 | use 30 tokens, 12 are charged; 20 expire |
+| 2 | 0 | 50 | 100 − 0 − 50 = 50 | 25 | use 25, 10 charged |
+| 3 | 0 | 50, 25 | 100 − 0 − 75 = 25 | 13 | use 13, 5 charged |
+| 4 | 12 | 25, 13 | 100 − 12 − 38 = 50 | 25 | use 20, 9 charged |
+| 5 | 22 | 13, 25 | 100 − 22 − 38 = 40 | 20 | use 20, 7 charged |
+| 6 | 27 | 25, 20 | 100 − 27 − 45 = 28 | 14 | … |
+
+What to notice:
+
+- **Steps 1–3: the allowance shrinks fast.** Nothing is visible yet, so every
+  grant is held at its full size: 50, then 75 of the 100.
+- **Step 4: budget comes back.** The grant of step 1 leaves the window. It was
+  held as 50 but really cost 12, which is now in S_obs. So 38 spends are free
+  again: the 20 tokens that expired and the 18 bids that failed. Nobody
+  reported them; the budget showed it.
+- **At every step** S_obs + window + G ≤ B. For example at step 4:
+  12 + 38 + 25 = 75 ≤ 100. That inequality is the whole guarantee (§2).
+- **The cost:** in steps 2 and 3 the center granted only 25 and 13, although
+  far more budget was really free. Budget held by tokens that will never be
+  charged is the price of needing no reports.
+
+### Pictures
+
+**What flows where.** Compare [token-cap-a.md](token-cap-a.md) §2. There are no
+arrows from clients back to the center: the only feedback is the budget.
 
 ```mermaid
 flowchart LR
@@ -51,11 +164,6 @@ window holds 6 steps):
  A(i) = B − S_obs − [ G(i-6) + G(i-5) + G(i-4) + G(i-3) + G(i-2) + G(i-1) ]
 ```
 
-Each step, the oldest grant leaves the window. Its spend is now in the budget,
-so it is counted at its actual cost instead of its full grant. Tokens that
-expired unused or whose bids failed simply stop counting. This is where budget
-is freed, with no message from clients.
-
 **One control step:**
 
 ```mermaid
@@ -71,25 +179,31 @@ sequenceDiagram
     Note over K: at end of step: unused tokens expire
 ```
 
-## 2. Rule
+## 2. Why overspend is impossible
 
-At the start of each control step i the center grants G_i tokens, **valid only
-during that step**. Unused tokens expire. It never grants more than
+**The rule.** At the start of each control step i the center grants G_i tokens,
+valid only during that step, and never more than
 
     A_i = B − S_obs − (tokens granted in the last d seconds)
 
-where S_obs is the spend visible in the budget, as in [system.md](system.md).
+**The proof**, in three observations:
 
-**Proof.** The spend delay d is fixed (answer A in [initialmodel.md](initialmodel.md)). So the spend from
-every step older than d is already in S_obs, and the only spend not yet visible
-comes from the steps of the last d seconds. Each of those steps spent at most
-the tokens it was granted. Hence
+1. **Old steps are fully visible.** The spend delay is d (answer A in
+   [initialmodel.md](initialmodel.md)), so all spend from steps older than d is
+   already inside S_obs.
+2. **Recent steps are bounded by their grants.** Spend not yet visible can come
+   only from the steps of the last d seconds, and each of those steps spent at
+   most the tokens it was granted, because a bid needs a token and unused
+   tokens expired.
+3. **The new step is bounded by its grant** G_i ≤ A_i.
+
+Adding the three:
 
     total spend ≤ S_obs + (tokens granted in the last d seconds) + G_i ≤ B. ∎
 
-Tokens that expired unused or whose bids failed need no report. Once their step
-is older than d, the budget shows what they actually cost, and the center stops
-counting them.
+The proof uses no probability and no assumption about traffic, p or the
+controller. It needs exactly three things: no bid without a token, tokens that
+really expire with their step, and a spend delay that never exceeds d (§3, §6).
 
 ## 3. What (b) gives up
 
