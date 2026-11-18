@@ -67,3 +67,45 @@ def test_caps_never_overspend_with_varying_traffic(mode):
         extra = {"center_profile": PROF} if known else {}
         res = simulate_with_backstop(scn, c, 200, seed=4, rate_profile=PROF, **extra, **kw)
         assert res.final_spend.max() <= scn.budget
+
+
+# --------------------------------------------------------------------------- even in time
+def test_even_in_time_with_known_profile_is_flat_and_keeps_eps():
+    scn = month_scenario()
+    prof = step_profile(scn.horizon, scn.step)
+    c = SeasonalController(scn.center_view(), prior_mean=100.0, eps=0.01, profile=prof, pace_goal="time")
+    res = simulate(scn, c, 600, seed=5, keep=1, rate_profile=prof, center_profile=prof)
+    assert res.overspent.mean() <= 0.02
+    assert res.max_pace_deviation.mean() < 0.002  # against the even-in-time line
+    p = res.traj_p[0][1440:]
+    assert p.max() > 4 * p.min()  # p moves against the traffic
+
+
+def test_even_in_time_without_profile_tracks_the_current_rate():
+    scn = month_scenario()
+    prof = step_profile(scn.horizon, scn.step)
+    c = SeasonalController(scn.center_view(), prior_mean=100.0, eps=0.01, pace_goal="time", risk_half_life=600.0)
+    res = simulate(scn, c, 300, seed=6, rate_profile=prof)
+    assert res.overspent.mean() <= 0.02
+    assert res.max_pace_deviation.mean() < 0.005
+
+
+def test_even_in_time_caps_p_at_one_when_quiet_hours_cannot_keep_up():
+    scn = replace(month_scenario(), budget=180_000_000)
+    prof = step_profile(scn.horizon, scn.step)
+    c = SeasonalController(scn.center_view(), prior_mean=100.0, eps=0.01, profile=prof, pace_goal="time")
+    res = simulate(scn, c, 50, seed=7, keep=1, rate_profile=prof, center_profile=prof)
+    assert (res.traj_p[0] > 0.999).mean() > 0.2
+    assert not res.overspent.any()
+
+
+@pytest.mark.parametrize("mode", ["reports", "grants"])
+def test_caps_never_overspend_with_even_pacing(mode):
+    kw = {"failure_delay": 30.0} if mode == "reports" else {"mode": "grants", "grant_share": 0.5}
+    scn = replace(TWO_DAYS, realization=1.0, request_rate=100.0)
+    for known in (True, False):
+        c = SeasonalPacer(scn.center_view(), prior_mean=100.0, profile=PROF if known else None,
+                          pace_goal="time", half_life=600.0)
+        extra = {"center_profile": PROF} if known else {}
+        res = simulate_with_backstop(scn, c, 200, seed=8, rate_profile=PROF, **extra, **kw)
+        assert res.final_spend.max() <= scn.budget

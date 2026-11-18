@@ -18,3 +18,19 @@ A 30-day campaign starting on a Monday at 00:00: B = 3,600,000 units, k0 = 100 s
 
 ![First week: traffic, p and spend rate](probabilistic-week.png)
 
+## Spending evenly in time
+
+The pacing goal changes from following the traffic to a constant spend rate: p = (budget left / time left) / (current spend rate at p = 1), so p is high in quiet hours and low in busy ones. Without a profile, the current rate comes from recent data. If a quiet hour cannot keep up even at p = 1, the shortfall raises the target rate for the rest of the campaign (catch-up). Deviation is measured against the even-in-time line. All rows send p only when it changes by more than 2 %. 4000 runs per row.
+
+| setting | P(overspend) | worst overspend, units | mean underspend, units | max deviation from even spending % | p range (days 1-29, one run) | share of steps at p = 1 | p messages per hour (2 % threshold) |
+|---|---|---|---|---|---|---|---|
+| follow the traffic, profile known (for comparison) | 7.50e-03 | 18 | 33 | 1.46 | 0.0137–0.0140 | 0% | 0.0 |
+| even in time, profile known | 1.00e-02 | 11 | 28 | 0.05 | 0.0080–0.0453 | 0% | 5.3 |
+| even in time, profile unknown, current rate from the last 1 h | 0 | 0 | 35 | 1.16 | 0.0072–0.0424 | 0% | 5.1 |
+| even in time, profile unknown, current rate from the last 10 min | 5.00e-03 | 14 | 30 | 0.06 | 0.0075–0.0488 | 0% | 6.8 |
+| even in time, profile wrong | 4.01e-01 | 16 | 1 | 1.97 | 0.0073–0.0333 | 0% | 5.2 |
+| budget × 50: even in time, profile known | 0 | 0 | 898704 | 4.78 | 0.4012–1.0000 | 6% | 2.7 |
+| budget × 50: follow the traffic, profile known | 1.15e-02 | 124 | 249 | 1.45 | 0.6901–0.6901 | 0% | 0.0 |
+
+![First week, even in time: traffic, p and spend rate](probabilistic-even-week.png)
+

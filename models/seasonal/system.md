@@ -13,7 +13,7 @@ versions:
 | Token cap (b) | [../token-cap-b.md](../token-cap-b.md) | [token-cap-b.md](token-cap-b.md) | [results](../../results/seasonal/token-cap-b.md) |
 
 Code: `src/pacing/seasonal.py` · experiments: `src/pacing/seasonal_experiments.py`
-(`uv run python -m pacing.seasonal_experiments`, about 4 min) · tests:
+(`uv run python -m pacing.seasonal_experiments`, about 8 min) · tests:
 `tests/test_seasonal.py`.
 
 ## 1. The traffic
@@ -61,6 +61,28 @@ budget spent by time t is the share of the campaign's traffic seen by then:
 This is always feasible (it needs no p above 1) and is the usual choice in
 advertising: a bid in a busy hour is worth as much as one in a quiet hour. The
 results report the largest deviation from this target.
+
+**The alternative: spend evenly in time** (option `pace_goal="time"`). The spend
+rate is kept constant, so p must work against the traffic:
+
+    p(t) = (budget left / time left) / (k₀ · s(t))
+
+p is then high in quiet hours and low in busy ones, here swinging 5.6 times a
+day. Compared with following the traffic:
+
+| | Follow the traffic | Even in time |
+|---|---|---|
+| p over a day | almost constant | inversely proportional to the traffic |
+| needs the current traffic for | the risk check only | pacing itself, every step |
+| p messages per hour (2 % threshold) | about 0 | about 5 |
+| feasible | always | only if even the quietest hour can keep up at p = 1: B/T ≤ k₀ · s_min |
+
+When the quietest hours cannot keep up, the controller runs them at p = 1 and
+catches up in the other hours. That is worse than following the traffic: in the
+experiments it ends further from the even line and leaves budget unspent
+([probabilistic.md](probabilistic.md) §3). Spending "as evenly as possible"
+would need planning ahead with the profile (which hours run at p = 1, and the
+rest spread over the busy hours); that is not implemented.
 
 ## 3. Why the math still works with a known shape
 

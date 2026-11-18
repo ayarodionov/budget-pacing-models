@@ -54,3 +54,11 @@ pacing under the cap, 500 runs per row:
    choice when the profile is unknown or unreliable: the probabilistic
    controller then needs a short-memory risk check to stay within ε, while the
    cap is safe without one.
+
+**Spending evenly in time** (§3 of [probabilistic.md](probabilistic.md)) under
+the cap, failure reports after 30 s: no overspend, and underspend 552–560 units
+(0.016 %) at r = 0.1, 0 at r = 1, with or without the profile (the pacing
+estimates the current rate from the last 10 minutes when the profile is
+unknown). With failure reports after 10 min it is about 3,100 units (0.09 %).
+Spending stays within 0.05–0.09 % of the even line. The cap's safety does not
+depend on the pacing goal.

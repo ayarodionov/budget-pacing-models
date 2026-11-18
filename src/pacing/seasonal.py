@@ -59,15 +59,38 @@ def traffic_target(profile: np.ndarray) -> np.ndarray:
 
 
 class _ProfileMixin:
-    """Pacing over the remaining traffic, and the traffic factor of the coming step."""
+    """Traffic profile, recent-rate tracking and the two pacing goals."""
 
-    def _init_profile(self, view, profile):
+    def _init_profile(self, view, profile, pace_goal="traffic", half_life=None):
+        if pace_goal not in ("traffic", "time"):
+            raise ValueError("pace_goal must be 'traffic' or 'time'")
+        self.pace_goal = pace_goal
         self.profile = None if profile is None else np.asarray(profile, dtype=float)
         if self.profile is not None:
             # exposure still to come at p = 1, from each step to the end of the planning time
             n_plan = max(1, int(round((view.horizon - self.endgame_time) / view.step)))
             prof = self.profile[:n_plan]
             self._remaining = np.concatenate([np.cumsum(prof[::-1])[::-1], [0.0]]) * view.step
+        if pace_goal == "time" and self.profile is None and half_life is None:
+            half_life = 3600.0  # even in time without a profile needs the current rate
+        self.half_life = half_life
+        self.discount = None if half_life is None else 0.5 ** (view.step / half_life)
+
+    def _reset_recent(self, n_runs):
+        self._s_prev = np.zeros(n_runs)
+        self._e_prev = np.zeros(n_runs)
+        self._s_recent = np.zeros(n_runs)
+        self._e_recent = np.zeros(n_runs)
+
+    def _track(self, observed_spend, observed_exposure):
+        """Recent data only: discount old spend and exposure, add what became visible."""
+        if self.discount is None:
+            return
+        g = self.discount
+        self._s_recent = g * self._s_recent + (observed_spend - self._s_prev)
+        self._e_recent = g * self._e_recent + (observed_exposure - self._e_prev)
+        self._s_prev = np.array(observed_spend, dtype=float)
+        self._e_prev = np.array(observed_exposure, dtype=float)
 
     def _step(self, t: float) -> int:
         return int(round(t / self.view.step))
@@ -83,13 +106,41 @@ class _ProfileMixin:
             return 1.0
         return float(self.profile[min(self._step(t), len(self.profile) - 1)])
 
+    def _pace(self, t, to_spend, k_est):
+        if self.pace_goal == "traffic":
+            return super()._pace(t, to_spend, k_est)
+        # even in time: spend the rest at a constant rate, whatever the traffic now.
+        # p = target rate / current rate; capped at 1 in hours that cannot keep up,
+        # and the shortfall raises the target rate for the rest of the campaign.
+        time_left = max(self.view.horizon - self.endgame_time - t, self.view.step)
+        target_rate = to_spend / time_left
+        if self.profile is not None:
+            k_now = k_est * self._rate_factor(t)
+        else:
+            seen = (self._s_recent > 0) & (self._e_recent > 0)
+            k_now = np.where(seen, (1.0 + self._s_recent) / np.where(seen, self._e_recent, 1.0), k_est)
+        return np.clip(target_rate / k_now, 0.0, 1.0)
+
 
 class SeasonalPacer(_ProfileMixin, NaiveController):
-    """Plain pacing over the remaining traffic, no risk check: for use under a token cap."""
+    """Plain pacing for traffic that varies, no risk check: for use under a token cap.
 
-    def __init__(self, view, prior_mean, profile: np.ndarray | None = None, **kw):
+    ``pace_goal``: "traffic" (follow the traffic) or "time" (spend evenly in time).
+    """
+
+    def __init__(self, view, prior_mean, profile: np.ndarray | None = None,
+                 pace_goal: str = "traffic", half_life: float | None = None, **kw):
         super().__init__(view, prior_mean, **kw)
-        self._init_profile(view, profile)
+        self._init_profile(view, profile, pace_goal, half_life)
+
+    def reset(self, n_runs):
+        super().reset(n_runs)
+        self._reset_recent(n_runs)
+
+    def decide(self, t, observed_spend, observed_exposure, inflight_exposure):
+        seen, _ = self._events(observed_spend)
+        self._track(seen, observed_exposure)
+        return super().decide(t, observed_spend, observed_exposure, inflight_exposure)
 
 
 class SeasonalController(_ProfileMixin, BayesRiskController):
@@ -101,31 +152,25 @@ class SeasonalController(_ProfileMixin, BayesRiskController):
                     the same array (``center_profile``).
     risk_half_life  seconds; if set, the risk check estimates k from recent data
                     only, discounting older spend and exposure with this half-life.
+    pace_goal       "traffic" (follow the traffic, default) or "time" (spend evenly
+                    in time: p inversely proportional to the current traffic).
+                    Without a profile, "time" uses the recent-data rate (half-life
+                    ``risk_half_life``, 1 h if not given) for pacing too.
     """
 
     def __init__(self, view, prior_mean, eps: float, profile: np.ndarray | None = None,
-                 risk_half_life: float | None = None, **kw):
+                 risk_half_life: float | None = None, pace_goal: str = "traffic", **kw):
         super().__init__(view, prior_mean, eps, **kw)
-        self._init_profile(view, profile)
-        self.half_life = risk_half_life
-        self.discount = None if risk_half_life is None else 0.5 ** (view.step / risk_half_life)
+        self._init_profile(view, profile, pace_goal, risk_half_life)
 
     def reset(self, n_runs):
         super().reset(n_runs)
-        self._s_prev = np.zeros(n_runs)
-        self._e_prev = np.zeros(n_runs)
-        self._s_recent = np.zeros(n_runs)
-        self._e_recent = np.zeros(n_runs)
+        self._reset_recent(n_runs)
 
     def _risk_posterior(self, observed_spend, observed_exposure, alpha, beta):
         if self.discount is None:
             return alpha, beta
-        # recent data only: discount old spend and exposure, add what became visible
-        g = self.discount
-        self._s_recent = g * self._s_recent + (observed_spend - self._s_prev)
-        self._e_recent = g * self._e_recent + (observed_exposure - self._e_prev)
-        self._s_prev = np.array(observed_spend, dtype=float)
-        self._e_prev = np.array(observed_exposure, dtype=float)
+        self._track(observed_spend, observed_exposure)
         seen = (self._s_recent > 0) & (self._e_recent > 0)
         return (np.where(seen, 1.0 + self._s_recent, alpha),
                 np.where(seen, self._e_recent, beta))

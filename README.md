@@ -37,6 +37,8 @@ follows the traffic within 0.05 %. Without it, it overspends in 15 % of
 campaigns that end at a busy hour, unless its risk check uses the last hour of
 data (0.18 % against ε = 1 %). A wrong profile is worse than none. The token caps
 never overspend, and over a month their cost is below 0.15 % of the budget.
+Spending evenly in time instead also works (0.05 % from the even line with the
+profile, 0.06 % without it), as long as the quietest hours can keep up.
 
 ### The models side by side
 
@@ -101,7 +103,7 @@ uv run pytest                          # Python tests, ~7 s
 uv run python -m pacing.experiments    # probabilistic controller, ~16 min (--quick: ~1.5 min)
 uv run python -m pacing.backstop       # token cap, versions (a) and (b), ~7 min (--quick: ~1 min)
 uv run python -m pacing.overview       # README comparison chart, ~80 s
-uv run python -m pacing.seasonal_experiments   # seasonal models, 30-day campaigns, ~4 min
+uv run python -m pacing.seasonal_experiments   # seasonal models, 30-day campaigns, ~8 min
 make -C elixir test                    # Elixir: math vs scipy; controller, token cap vs Python; registration
 make -C elixir bench                   # pure Elixir vs NIF speed
 ```

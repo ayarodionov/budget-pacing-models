@@ -8,16 +8,24 @@ The same 30-day campaign as for the probabilistic controller. Plain pacing that 
 |---|---|---|---|---|---|---|
 | r = 0.1, failure reports after 30 s, profile known | 0 | 6.0e-03 | 0 | 791 | 0.0220 | 0.05 |
 | r = 0.1, failure reports after 30 s, profile unknown | 0 | 6.0e-03 | 0 | 96 | 0.0027 | 0.57 |
+| r = 0.1, failure reports after 30 s, even in time, profile known (deviation from even spending) | 0 | 6.0e-03 | 0 | 552 | 0.0153 | 0.05 |
+| r = 0.1, failure reports after 30 s, even in time, profile unknown (deviation from even spending) | 0 | 6.0e-03 | 0 | 560 | 0.0156 | 0.05 |
 | r = 0.1, failure reports after 30 s, p = 1 throughout | 0 | 3.0e-02 | 0 | 0 | 0.0000 | 97.95 |
 | r = 0.1, failure reports after 10 min, profile known | 0 | 6.0e-03 | 0 | 4855 | 0.1349 | 0.13 |
 | r = 0.1, failure reports after 10 min, profile unknown | 0 | 6.0e-03 | 0 | 1551 | 0.0431 | 0.57 |
+| r = 0.1, failure reports after 10 min, even in time, profile known (deviation from even spending) | 0 | 6.0e-03 | 0 | 3164 | 0.0879 | 0.09 |
+| r = 0.1, failure reports after 10 min, even in time, profile unknown (deviation from even spending) | 0 | 6.0e-03 | 0 | 3101 | 0.0861 | 0.09 |
 | r = 0.1, failure reports after 10 min, p = 1 throughout | 0 | 3.0e-02 | 0 | 0 | 0.0000 | 97.14 |
 |  |  |  |  |  |  |  |
 | r = 1, failure reports after 30 s, profile known | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.05 |
 | r = 1, failure reports after 30 s, profile unknown | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.57 |
+| r = 1, failure reports after 30 s, even in time, profile known (deviation from even spending) | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.05 |
+| r = 1, failure reports after 30 s, even in time, profile unknown (deviation from even spending) | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.05 |
 | r = 1, failure reports after 30 s, p = 1 throughout | 0 | 3.0e-02 | 0 | 0 | 0.0000 | 98.14 |
 | r = 1, failure reports after 10 min, profile known | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.05 |
 | r = 1, failure reports after 10 min, profile unknown | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.57 |
+| r = 1, failure reports after 10 min, even in time, profile known (deviation from even spending) | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.05 |
+| r = 1, failure reports after 10 min, even in time, profile unknown (deviation from even spending) | 0 | 6.0e-03 | 0 | 0 | 0.0000 | 0.05 |
 | r = 1, failure reports after 10 min, p = 1 throughout | 0 | 3.0e-02 | 0 | 0 | 0.0000 | 98.14 |
 |  |  |  |  |  |  |  |
 

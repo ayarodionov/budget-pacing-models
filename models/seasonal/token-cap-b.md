@@ -50,3 +50,10 @@ pacing under the cap, grant share 0.5, 500 runs per row:
 4. **Version (b) keeps its usual conditions:** a hard maximum for d, grants that
    really expire, and a grant margin that covers the delivery delay of grants
    ([../token-cap-b.md](../token-cap-b.md) §3, §6). Varying traffic adds none.
+
+**Spending evenly in time** (§3 of [probabilistic.md](probabilistic.md)) under
+the cap: no overspend, and underspend about 855 units (0.024 %) at r = 0.1 and
+about 25 units at r = 1, with or without the profile (the pacing estimates the
+current rate from the last 10 minutes when the profile is unknown). Spending
+stays within 0.05 % of the even line. The cap's safety does not depend on the
+pacing goal.

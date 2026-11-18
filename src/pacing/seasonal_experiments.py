@@ -96,10 +96,67 @@ def probabilistic(n: int):
     res = simulate(scn, c, 1, seed=22, keep=1, rate_profile=prof, center_profile=prof, target=tgt)
     _fig_profile(scn, prof, res, OUT / "probabilistic-week.png")
     md += ["![First week: traffic, p and spend rate](probabilistic-week.png)", ""]
+    md += even_section(scn, prof, wrong, n)
     return md
 
 
-def _fig_profile(scn, prof, res, path):
+HEADER_EVEN = ("| setting | P(overspend) | worst overspend, units | mean underspend, units | max deviation from "
+               "even spending % | p range (days 1-29, one run) | share of steps at p = 1 | p messages per hour "
+               "(2 % threshold) |\n|---|---|---|---|---|---|---|---|")
+
+
+def even_section(scn, prof, wrong, n):
+    """Spending evenly in time instead of following the traffic."""
+    big = replace(scn, budget=50 * scn.budget)
+    rows = [
+        ("follow the traffic, profile known (for comparison)", scn, dict(profile=prof),
+         dict(rate_profile=prof, center_profile=prof)),
+        ("even in time, profile known", scn, dict(profile=prof, pace_goal="time"),
+         dict(rate_profile=prof, center_profile=prof)),
+        ("even in time, profile unknown, current rate from the last 1 h", scn,
+         dict(pace_goal="time", risk_half_life=3600.0), dict(rate_profile=prof)),
+        ("even in time, profile unknown, current rate from the last 10 min", scn,
+         dict(pace_goal="time", risk_half_life=600.0), dict(rate_profile=prof)),
+        ("even in time, profile wrong", scn, dict(profile=wrong, pace_goal="time"),
+         dict(rate_profile=prof, center_profile=wrong)),
+        ("budget × 50: even in time, profile known", big, dict(profile=prof, pace_goal="time"),
+         dict(rate_profile=prof, center_profile=prof)),
+        ("budget × 50: follow the traffic, profile known", big, dict(profile=prof),
+         dict(rate_profile=prof, center_profile=prof)),
+    ]
+    hours = scn.horizon / 3600
+    lo, hi = int(DAY / scn.step), int(29 * DAY / scn.step)
+    md = ["## Spending evenly in time", "",
+          "The pacing goal changes from following the traffic to a constant spend rate: "
+          "p = (budget left / time left) / (current spend rate at p = 1), so p is high in quiet "
+          "hours and low in busy ones. Without a profile, the current rate comes from recent data. "
+          "If a quiet hour cannot keep up even at p = 1, the shortfall raises the target rate for "
+          "the rest of the campaign (catch-up). Deviation is measured against the even-in-time line. "
+          f"All rows send p only when it changes by more than 2 %. {n} runs per row.", "", HEADER_EVEN]
+    sample = {}
+    for name, sc, ckw, skw in rows:
+        c = SeasonalController(sc.center_view(), prior_mean=sc.spend_rate_at_p1, eps=EPS,
+                               broadcast_threshold=0.02, **ckw)
+        res = simulate(sc, c, n, seed=24, keep=1, **skw)
+        s = res.summary(sc.budget)
+        over = res.final_spend - sc.budget
+        pp = res.traj_p[0][lo:hi]
+        p_ = f"{s['overspend_prob']:.2e}" if s["overspend_prob"] else "0"
+        md.append(f"| {name} | {p_} | {max(0.0, float(over.max())):.0f} | "
+                  f"{s['mean_underspend_pct'] * sc.budget / 100:.0f} | {s['mean_max_pace_dev_pct']:.2f} | "
+                  f"{pp.min():.4f}–{pp.max():.4f} | {(pp > 0.999).mean():.0%} | {c.broadcasts.mean() / hours:.1f} |")
+        if name.startswith("even in time, profile known"):
+            sample = res
+    md.append("")
+    _fig_profile(scn, prof, sample, OUT / "probabilistic-even-week.png",
+                 p_title="p is high in quiet hours and low in busy ones",
+                 spend_title="Spend is (almost) flat")
+    md += ["![First week, even in time: traffic, p and spend rate](probabilistic-even-week.png)", ""]
+    return md
+
+
+def _fig_profile(scn, prof, res, path, p_title="p stays almost constant: pacing follows the traffic",
+                 spend_title="Spend follows the traffic"):
     week = int(7 * DAY / scn.step)
     t = np.arange(week) * scn.step / DAY
     spend = np.diff(res.traj_spend[0][: week + 1]) / scn.step
@@ -108,11 +165,11 @@ def _fig_profile(scn, prof, res, path):
     axes[0].plot(t, prof[:week], color=INK2, lw=1)
     axes[0].set(ylabel="traffic factor s(t)", title="Traffic profile: daily cycle, quieter weekend")
     axes[1].plot(t, p, color=BLUE, lw=1)
-    axes[1].set(ylabel="broadcast p", title="p stays almost constant: pacing follows the traffic")
+    axes[1].set(ylabel="broadcast p", title=p_title)
     hourly = spend.reshape(-1, 60).mean(axis=1) if week % 60 == 0 else spend
     axes[2].plot(np.arange(len(hourly)) * (60 * scn.step) / DAY, hourly, color=ORANGE, lw=1)
     axes[2].set(ylabel="spend, units/s (hourly mean)", xlabel="day of the campaign (Monday = 0)",
-                title="Spend follows the traffic")
+                title=spend_title)
     for ax in axes:
         ax.set_axisbelow(True)
     fig.tight_layout()
@@ -146,6 +203,13 @@ def caps(mode: str, n: int):
                 extra = dict(center_profile=prof) if known else {}
                 res = simulate_with_backstop(scn, c, n, seed=23, rate_profile=prof, target=tgt, **extra, **kw)
                 md.append(row(f"r = {r:g}, {vname}, profile {'known' if known else 'unknown'}", res, scn.budget))
+            for known in (True, False):
+                c = SeasonalPacer(scn.center_view(), prior_mean=scn.spend_rate_at_p1,
+                                  profile=prof if known else None, pace_goal="time", half_life=600.0)
+                extra = dict(center_profile=prof) if known else {}
+                res = simulate_with_backstop(scn, c, n, seed=23, rate_profile=prof, **extra, **kw)
+                md.append(row(f"r = {r:g}, {vname}, even in time, profile {'known' if known else 'unknown'}"
+                              " (deviation from even spending)", res, scn.budget))
             res = simulate_with_backstop(scn, FullThrottle(), 100, seed=23, rate_profile=prof, **kw)
             md.append(row(f"r = {r:g}, {vname}, p = 1 throughout", res, scn.budget))
         md.append("|  |  |  |  |  |  |  |")

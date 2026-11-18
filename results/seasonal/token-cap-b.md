@@ -8,10 +8,14 @@ The same 30-day campaign as for the probabilistic controller. Plain pacing that 
 |---|---|---|---|---|---|---|
 | r = 0.1, grant share 0.5, profile known | 0 | 6.0e-03 | 0 | 1234 | 0.0343 | 0.05 |
 | r = 0.1, grant share 0.5, profile unknown | 0 | 6.0e-03 | 0 | 184 | 0.0051 | 0.57 |
+| r = 0.1, grant share 0.5, even in time, profile known (deviation from even spending) | 0 | 6.0e-03 | 0 | 852 | 0.0237 | 0.05 |
+| r = 0.1, grant share 0.5, even in time, profile unknown (deviation from even spending) | 0 | 6.0e-03 | 0 | 857 | 0.0238 | 0.05 |
 | r = 0.1, grant share 0.5, p = 1 throughout | 0 | 3.0e-02 | 0 | 0 | 0.0000 | 97.86 |
 |  |  |  |  |  |  |  |
 | r = 1, grant share 0.5, profile known | 0 | 6.0e-03 | 0 | 32 | 0.0009 | 0.05 |
 | r = 1, grant share 0.5, profile unknown | 0 | 6.0e-03 | 0 | 1 | 0.0000 | 0.57 |
+| r = 1, grant share 0.5, even in time, profile known (deviation from even spending) | 0 | 6.0e-03 | 0 | 23 | 0.0006 | 0.05 |
+| r = 1, grant share 0.5, even in time, profile unknown (deviation from even spending) | 0 | 6.0e-03 | 0 | 26 | 0.0007 | 0.05 |
 | r = 1, grant share 0.5, p = 1 throughout | 0 | 3.0e-02 | 0 | 0 | 0.0000 | 98.13 |
 |  |  |  |  |  |  |  |
 
