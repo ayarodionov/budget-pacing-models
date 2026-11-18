@@ -47,6 +47,10 @@ class Scenario:
     message_delay_max: float = 0.0  # delta_max >= delta, the bound the center plans with
     # clients ignore a p older than this (needs synchronised clocks); None = no check
     message_age_limit: float | None = None
+    # random spend delay instead of the fixed d: ("exp", mean), ("uniform", lo, hi) or
+    # ("lognormal", median, sigma), in seconds; truncated at 600 s. None = fixed d.
+    # ``delay`` is then what a center with a fixed-delay model assumes.
+    delay_dist: tuple | None = None
 
     @property
     def spend_rate_at_p1(self) -> float:
@@ -166,6 +170,7 @@ def simulate(
     silence_limit: float | None = None,
     feed_outage: tuple[float, float] | None = None,
     halt_on_stale_feed: float | None = None,
+    center_pmf: np.ndarray | None = None,
 ) -> SimResult:
     """Run ``n_runs`` independent replications of one campaign in parallel.
 
@@ -186,6 +191,13 @@ def simulate(
     keeps seeing the spend that was visible at t0. With ``halt_on_stale_feed``
     (seconds, a tolerance) the center notices that the feed is older than
     d + tolerance and sends p = 0 until it is fresh again.
+
+    ``scn.delay_dist`` makes the spend delay random, drawn for each spend. The
+    center then either keeps its fixed-delay bookkeeping (it assumes ``scn.delay``)
+    or, with ``center_pmf``, weights its exposure by a delay distribution: the
+    probability that a spend shows up after 0, 1, 2, ... steps (see ``delay_pmf``).
+    E = sum of p * step * G(age) and W = sum of p * step * (1 - G(age)), where G is
+    the cumulative of ``center_pmf``.
     """
     rng = np.random.default_rng(seed)
     k = (
@@ -202,6 +214,18 @@ def simulate(
     m_steps = int(scn.message_delay // dt)
     m_frac = scn.message_delay - m_steps * dt  # p_(i-m-1) is in effect for this long in step i
     hist = max(cd_steps, m_steps + 1) + 1
+    true_pmf = delay_pmf(scn.delay_dist, dt) if scn.delay_dist is not None else None
+    if true_pmf is not None:
+        vis_ring = np.zeros((n_runs, len(true_pmf)), dtype=np.int64)  # spend by step it shows up
+    if center_pmf is not None:
+        if scn.message_delay or scn.message_delay_max:
+            raise ValueError("center_pmf is not combined with a delivery delay of p")
+        center_pmf = np.asarray(center_pmf, dtype=float)
+        lc = len(center_pmf) - 1
+        g_cdf = np.cumsum(center_pmf)[:lc]  # P(visible within m steps), m = 0 .. lc - 1
+        lags = np.arange(lc)
+        hist = max(hist, lc + 1)
+        e_full = np.zeros(n_runs)  # exposure of steps old enough to be surely visible
     ring_p = np.zeros((n_runs, hist))
 
     obs_spend = np.zeros(n_runs, dtype=np.int64)
@@ -228,6 +252,10 @@ def simulate(
     for i in range(n_steps):
         if i < fo0 or i >= fo1:
             seen = obs_spend.copy()  # the feed is current; during an outage it stays frozen
+        if center_pmf is not None:
+            recent = ring_p[:, (i - 1 - lags) % hist]  # p of steps i-1, i-2, ...
+            obs_exposure = e_full + (recent * g_cdf).sum(axis=1) * dt
+            inflight = (recent * (1.0 - g_cdf)).sum(axis=1) * dt
         p = np.clip(
             controller.decide(i * dt, c * seen, obs_exposure, inflight), 0.0, 1.0
         )
@@ -253,17 +281,27 @@ def simulate(
             # clients that check the age of p ignore one that arrives too late
             x = np.zeros(n_runs, dtype=np.int64) if stale else rng.poisson(k * exposure)
         true_spend += x
-        ring_x[:, i % ring] = x
-        inflight += p * dt
+        if true_pmf is None:
+            ring_x[:, i % ring] = x
+            j = i - d_steps  # this step's spend becomes visible before step i + 1
+            if j >= 0:
+                obs_spend += ring_x[:, j % ring]
+        else:
+            # each spend shows up after its own random number of steps
+            r_len = len(true_pmf)
+            vis_ring[:, (i + np.arange(r_len)) % r_len] += rng.multinomial(x, true_pmf)
+            obs_spend += vis_ring[:, i % r_len]
+            vis_ring[:, i % r_len] = 0
 
-        j = i - d_steps  # this step's spend becomes visible before step i + 1
-        if j >= 0:
-            obs_spend += ring_x[:, j % ring]
-        j = i - cd_steps  # the center stops counting this decided p as in flight
-        if j >= 0:
-            obs_exposure += ring_p[:, j % hist] * dt
-            inflight -= ring_p[:, j % hist] * dt
-            np.maximum(inflight, 0.0, out=inflight)
+        if center_pmf is None:
+            inflight += p * dt
+            j = i - cd_steps  # the center stops counting this decided p as in flight
+            if j >= 0:
+                obs_exposure += ring_p[:, j % hist] * dt
+                inflight -= ring_p[:, j % hist] * dt
+                np.maximum(inflight, 0.0, out=inflight)
+        elif i - lc >= 0:
+            e_full += ring_p[:, (i - lc) % hist] * dt
 
         dev = np.abs(true_spend / scn.budget_events - (i + 1) / n_steps)
         np.maximum(max_dev, dev, out=max_dev)
@@ -279,6 +317,31 @@ def simulate(
         traj_spend=traj_spend,
         traj_p=traj_p,
     )
+
+
+def delay_pmf(dist: tuple, step: float, cap: float = 600.0) -> np.ndarray:
+    """P(a spend shows up after exactly L steps), L = 0, 1, ...: L = ceil(delay / step).
+
+    ``dist``: ("fixed", d), ("exp", mean), ("uniform", lo, hi) or ("lognormal",
+    median, sigma), in seconds. Delays above ``cap`` are put at the cap.
+    """
+    from scipy import stats
+
+    kind = dist[0]
+    if kind == "fixed":
+        pmf = np.zeros(math.ceil(dist[1] / step - 1e-9) + 1)
+        pmf[-1] = 1.0
+        return pmf
+    f = {"exp": lambda: stats.expon(scale=dist[1]),
+         "uniform": lambda: stats.uniform(loc=dist[1], scale=dist[2] - dist[1]),
+         "lognormal": lambda: stats.lognorm(s=dist[2], scale=dist[1])}[kind]()
+    lmax = math.ceil(cap / step)
+    cdf = f.cdf(np.arange(lmax + 1) * step)
+    pmf = np.diff(cdf, prepend=0.0)
+    pmf[-1] += 1.0 - cdf[-1]
+    last = np.nonzero(pmf > 1e-15)[0][-1]
+    pmf = pmf[: last + 1]
+    return pmf / pmf.sum()
 
 
 def _halt_step(scn: Scenario, allowance: float | None) -> float:

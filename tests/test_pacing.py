@@ -349,3 +349,32 @@ def test_outage_options_change_nothing_when_there_is_no_outage():
     b = simulate(SMALL, BayesRiskController(SMALL.center_view(), prior_mean=10.0, eps=0.01), 300, seed=4,
                  halt_on_stale_feed=10.0, silence_limit=15.0)
     np.testing.assert_array_equal(a.final_spend, b.final_spend)
+
+
+# --------------------------------------------------------------------------- random spend delay
+from pacing.model import delay_pmf  # noqa: E402
+
+
+def test_delay_pmf():
+    fixed = delay_pmf(("fixed", 30.0), 5.0)
+    assert fixed.argmax() == 6 and fixed.sum() == 1.0
+    uni = delay_pmf(("uniform", 10.0, 50.0), 5.0)
+    assert len(uni) == 11 and uni[:2].sum() == 0.0 and abs(uni.sum() - 1) < 1e-12
+    expo = delay_pmf(("exp", 30.0), 5.0)
+    assert len(expo) == 121 and abs(expo.sum() - 1) < 1e-12  # truncated at 600 s
+
+
+def test_fixed_delay_as_a_distribution_changes_nothing():
+    a = simulate(DEFAULT, _bayes(DEFAULT), 500, seed=3)
+    b = simulate(DEFAULT, _bayes(DEFAULT), 500, seed=3, center_pmf=delay_pmf(("fixed", 30.0), 5.0))
+    np.testing.assert_array_equal(a.final_spend, b.final_spend)
+
+
+def test_random_delay_breaks_eps_unless_the_center_weights_by_it():
+    scn = Scenario(**{**DEFAULT.__dict__, "delay_dist": ("exp", 30.0)})
+    eps = 0.01
+    mean_only = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=100.0, eps=eps), 3000, seed=2)
+    weighted = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=100.0, eps=eps), 3000, seed=2,
+                        center_pmf=delay_pmf(("exp", 30.0), 5.0))
+    assert mean_only.overspent.mean() > 2 * eps
+    assert weighted.overspent.mean() <= 1.5 * eps

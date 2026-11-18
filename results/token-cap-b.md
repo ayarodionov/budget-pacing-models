@@ -59,3 +59,30 @@ No message passes either way during the outage; clients keep the last p for thei
 | 1 | 300 s from 1000 s | 0 | 0.01 | 8.15 |
 | 1 | from 3300 s to the end, p = 1 throughout | 0 | 0.00 | – |
 |  |  |  |  |  |
+
+## Spend delay that varies
+
+Each spend shows up after its own random delay. Version (b) counts each grant as unresolved for its window and then assumes its spend is visible. The window is the mean delay, the 99.9 % quantile, or the longest possible delay (600 s for the truncated tails). Plain pacing with the cap. 20000 runs per row.
+
+| r | delay | window | overspends | mean underspend % |
+|---|---|---|---|---|
+| 0.1 | exponential, mean 30 s | mean (30 s) | 0 | 3.59 |
+| 0.1 | exponential, mean 30 s | 99.9 % (207 s) | 0 | 31.03 |
+| 0.1 | exponential, mean 30 s | longest (600 s) | 0 | 72.06 |
+| 0.1 | uniform 10-50 s | mean (30 s) | 0 | 3.59 |
+| 0.1 | uniform 10-50 s | 99.9 % (50 s) | 0 | 5.93 |
+| 0.1 | uniform 10-50 s | longest (50 s) | 0 | 5.93 |
+| 0.1 | lognormal, median 20 s, sigma 1 | mean (33 s) | 0 | 4.11 |
+| 0.1 | lognormal, median 20 s, sigma 1 | 99.9 % (440 s) | 0 | 58.64 |
+| 0.1 | lognormal, median 20 s, sigma 1 | longest (600 s) | 0 | 72.06 |
+|  |  |  |  |  |
+| 1 | exponential, mean 30 s | mean (30 s) | 18978 | 0.00 |
+| 1 | exponential, mean 30 s | 99.9 % (207 s) | 0 | 3.32 |
+| 1 | exponential, mean 30 s | longest (600 s) | 0 | 42.17 |
+| 1 | uniform 10-50 s | mean (30 s) | 17813 | 0.00 |
+| 1 | uniform 10-50 s | 99.9 % (50 s) | 0 | 0.30 |
+| 1 | uniform 10-50 s | longest (50 s) | 0 | 0.30 |
+| 1 | lognormal, median 20 s, sigma 1 | mean (33 s) | 17971 | 0.00 |
+| 1 | lognormal, median 20 s, sigma 1 | 99.9 % (440 s) | 0 | 21.73 |
+| 1 | lognormal, median 20 s, sigma 1 | longest (600 s) | 0 | 42.31 |
+|  |  |  |  |  |

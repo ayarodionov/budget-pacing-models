@@ -173,3 +173,21 @@ def test_cut_off_clients_spend_only_their_wallets():
     extra = wallets.final_spend - pool.final_spend
     assert extra.max() <= 7
     assert extra.mean() > 5
+
+
+# --------------------------------------------------------------------------- random spend delay
+@pytest.mark.parametrize("dist", [("exp", 10.0), ("lognormal", 8.0, 1.0)])
+def test_cap_a_ignores_a_random_spend_delay(dist):
+    scn = replace(SMALL, realization=1.0, request_rate=10.0, delay=10.0, delay_dist=dist)
+    res = simulate_with_backstop(scn, _FullThrottle(), 1000, 5.0, seed=6)
+    assert res.final_spend.max() <= scn.budget
+
+
+def test_cap_b_needs_its_window_to_cover_the_longest_delay():
+    """Window = mean delay: some spend shows up after the center stopped counting its grant."""
+    mean_window = replace(SMALL, realization=1.0, request_rate=10.0, delay=30.0, delay_dist=("uniform", 10.0, 50.0))
+    res = simulate_with_backstop(mean_window, _FixedP(0.5), 1000, seed=6, mode="grants", grant_share=0.5)
+    assert res.overspent.mean() > 0.5
+    max_window = replace(mean_window, delay=50.0)
+    res = simulate_with_backstop(max_window, _FixedP(0.5), 1000, seed=6, mode="grants", grant_share=0.5)
+    assert res.final_spend.max() <= max_window.budget

@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from .controllers import BayesRiskController, NaiveController
-from .model import Controller, Scenario, SimResult
+from .model import Controller, Scenario, SimResult, delay_pmf
 
 
 @dataclass
@@ -125,6 +125,11 @@ def simulate_with_backstop(
     silence = silence_limit if silence_limit is not None else 3 * dt + scn.message_delay_max
     p_kept = np.zeros(n_runs)
     held = np.zeros(n_runs, dtype=np.int64)  # (a) with wallets: tokens the clients hold
+    # random spend delay (scn.delay_dist): the truth; the center still assumes scn.delay,
+    # e.g. version (b) counts a grant as unresolved for scn.delay seconds
+    true_pmf = delay_pmf(scn.delay_dist, dt) if scn.delay_dist is not None else None
+    if true_pmf is not None:
+        vis_ring = np.zeros((n_runs, len(true_pmf)), dtype=np.int64)
     pending = np.zeros(n_runs, dtype=np.int64)  # failure reports queued during an outage
     fring = f_steps + 1
     ring_f = np.zeros((n_runs, fring), dtype=np.int64)  # failures per step
@@ -240,11 +245,18 @@ def simulate_with_backstop(
         fslot = i % fring
         ring_f[:, fslot] = tokens - x
 
+        if true_pmf is not None:
+            # each spend shows up after its own random number of steps
+            r_len = len(true_pmf)
+            vis_ring[:, (i + np.arange(r_len)) % r_len] += rng.multinomial(x, true_pmf)
+            obs_spend += vis_ring[:, i % r_len]
+            vis_ring[:, i % r_len] = 0
         j = i - d_steps
         if j >= 0:
             sj = j % ring
-            obs_spend += ring_x[:, sj]
-            granted_unresolved -= ring_g[:, sj]  # its spend is now visible
+            if true_pmf is None:
+                obs_spend += ring_x[:, sj]
+            granted_unresolved -= ring_g[:, sj]  # the center assumes its spend is now visible
         j = i - cd_steps
         if j >= 0:
             obs_exposure += ring_p[:, j % pring] * dt
@@ -340,6 +352,7 @@ def main() -> None:
         md.append("|  |  |  |  |  |  |  |  |")
     md += ["", "![Cost of the cap against the failure-report delay, r = 0.1](token-cap-a.png)"]
     md += _outage_section("reports", base, k, n)
+    md += _delay_section("reports", base, k, n)
     (out / "token-cap-a.md").write_text("\n".join(md) + "\n")
 
     # ---- version (b): no reports from clients, grants expire after one step
@@ -399,6 +412,7 @@ def main() -> None:
     md += ["", "Cells: mean underspend (max pacing deviation).", "",
            "![Underspend against the grant share s](token-cap-b-share.png)"]
     md += _outage_section("grants", base, k, n)
+    md += _delay_section("grants", base, k, n)
     (out / "token-cap-b.md").write_text("\n".join(md) + "\n")
     _fig_b_compare(compare, out / "token-cap-b-compare.png")
     _fig_b_share(share_pts, out / "token-cap-b-share.png")
@@ -496,6 +510,42 @@ def _outage_section(mode: str, base: Scenario, k: float, n: int) -> list[str]:
                                      link_outage=(3300.0, 3600.0), **kw)
         md.append(f"| {r:g} | from 3300 s to the end, p = 1 throughout | {int(res.overspent.sum())} | "
                   f"{res.summary(scn.budget)['mean_underspend_pct']:.2f} | – |")
+        md.append("|  |  |  |  |  |")
+    return md
+
+
+def _delay_section(mode: str, base: Scenario, k: float, n: int) -> list[str]:
+    """Results lines: the cap when the spend delay varies."""
+    from scipy import stats
+
+    dists = [("exponential, mean 30 s", ("exp", 30.0), stats.expon(scale=30.0), 600.0),
+             ("uniform 10-50 s", ("uniform", 10.0, 50.0), stats.uniform(loc=10.0, scale=40.0), 50.0),
+             ("lognormal, median 20 s, sigma 1", ("lognormal", 20.0, 1.0), stats.lognorm(s=1.0, scale=20.0),
+              600.0)]
+    if mode == "reports":
+        kw = {"failure_delay": 5.0}
+        intro = ("Version (a) does not use d: its cap counts tokens. The pacing controller "
+                 "underneath assumes d = the mean delay.")
+    else:
+        kw = {"grant_share": 0.5}
+        intro = ("Version (b) counts each grant as unresolved for its window and then assumes "
+                 "its spend is visible. The window is the mean delay, the 99.9 % quantile, or "
+                 "the longest possible delay (600 s for the truncated tails).")
+    md = ["", "## Spend delay that varies", "",
+          f"Each spend shows up after its own random delay. {intro} Plain pacing with the cap. "
+          f"{n} runs per row.", "",
+          "| r | delay | window | overspends | mean underspend % |", "|---|---|---|---|---|"]
+    for r in (0.1, 1.0):
+        for name, dist, f, longest in dists:
+            windows = [("mean", float(f.mean()))]
+            if mode == "grants":
+                windows += [("99.9 %", min(float(f.ppf(0.999)), 600.0)), ("longest", longest)]
+            for wname, w in windows:
+                scn = replace(base, request_rate=k / r, realization=r, delay=w, delay_dist=dist)
+                res = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=k), n,
+                                             seed=9, mode=mode, **kw)
+                md.append(f"| {r:g} | {name} | {wname} ({w:.0f} s) | {int(res.overspent.sum())} | "
+                          f"{res.summary(scn.budget)['mean_underspend_pct']:.2f} |")
         md.append("|  |  |  |  |  |")
     return md
 

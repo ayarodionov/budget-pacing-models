@@ -286,6 +286,27 @@ def main() -> None:
         res = simulate(scn, bayes(scn, eps, **ckw), n, seed=13, **skw)
         md.append(fmt_row_over(name, res.summary(scn.budget), res.final_spend - scn.budget))
     md.append("")
+
+    # ---- E14: random spend delay
+    from scipy import stats
+    from .model import delay_pmf
+    md += ["## 14. Spend delay that varies", "",
+           "Each spend shows up in the budget after its own random delay (truncated at 600 s). "
+           "The center either assumes a fixed d (the mean, or the 99.9 % quantile) or weights "
+           "its exposure by the true delay distribution F.", "", HEADER_OVER]
+    dists14 = [("exponential, mean 30 s", ("exp", 30.0), stats.expon(scale=30.0)),
+               ("uniform 10-50 s", ("uniform", 10.0, 50.0), stats.uniform(loc=10.0, scale=40.0)),
+               ("lognormal, median 20 s, sigma 1", ("lognormal", 20.0, 1.0), stats.lognorm(s=1.0, scale=20.0))]
+    for name, dist, f in dists14:
+        q999 = min(float(f.ppf(0.999)), 600.0)
+        for label, d, pmf in ((f"assume d = mean ({f.mean():.0f} s)", float(f.mean()), None),
+                              (f"assume d = 99.9 % quantile ({q999:.0f} s)", q999, None),
+                              ("weight by F", float(f.mean()), delay_pmf(dist, scn.step))):
+            sc = replace(scn, delay=d, delay_dist=dist)
+            res = simulate(sc, bayes(sc, eps), n, seed=14, center_pmf=pmf)
+            md.append(fmt_row_over(f"{name}: {label}", res.summary(sc.budget), res.final_spend - sc.budget))
+        md.append("|  |  |  |  |  |  |")
+    md.append("")
     md.append(f"_Total compute: {time.time() - t_start:.0f} s._")
     (OUT / "probabilistic.md").write_text("\n".join(md) + "\n")
 

@@ -261,6 +261,10 @@ still connected.
 **Conditions:** no bid without a token, honest failure reports, and token
 counts that survive a center restart (durable store, [system.md](system.md) §6).
 
+**A spend delay that varies changes nothing either.** The rule never uses d, so
+a random or unbounded delay does not affect the guarantee; it affects only the
+pacing controller underneath ([system.md](system.md) §7).
+
 Compared with version (b): (b) stops cut-off clients faster (within one period)
 and gets its budget back by itself after the outage, but its guarantee needs
 synchronised clocks and timing bounds ([token-cap-b.md](token-cap-b.md) §6).

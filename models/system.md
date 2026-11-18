@@ -115,7 +115,7 @@ total over B.
 | B | budget, in budget units | yes |
 | c | cost of one realised token, in budget units (fixed; spend = c × realised tokens) | yes: every spend appears as a budget decrement of exactly c |
 | T | horizon (time to spend the budget) | yes |
-| d | fixed delay between a spend and its appearance in the budget | yes |
+| d | delay between a spend and its appearance in the budget: fixed in the base model (answer A); it may also vary, see §7 | yes (or its distribution F) |
 | Δ | control period (how often the center may broadcast a new p) | yes |
 | δ | delivery delay: a new p reaches the clients δ seconds after the center decides it (0 in the base model, answer C) | no |
 | δ_max | upper bound on δ that the center plans with (§6, *Push or pull*) | yes (chosen) |
@@ -592,9 +592,50 @@ center.
 - **Traffic that changes over time.** Forecast λ(t) and pace along it.
 - **k that drifts.** Discount old observations (see
   [implementation.md](implementation.md) §1).
-- **A random delay.** Use its upper quantile or model its distribution. The
-  token cap (b) relies on d being a hard maximum.
-- **A delay before clients receive a new p.** Add it to the in-flight window.
+- **A spend delay that varies** (implemented, see below).
+- **A delay before clients receive a new p** (implemented: δ_max, §6).
 - **Traffic that varies more than Poisson** (§3). This is the assumption the
   probabilistic controller's ε guarantee is most sensitive to. The token caps do
   not depend on it.
+
+### A spend delay that varies
+
+If each spend shows up in the budget after its own random delay instead of a
+fixed d, the three models are affected very differently.
+
+**Probabilistic controller: weight by the delay distribution.** If each spend
+is delayed independently, with distribution F, the Poisson structure survives;
+splitting spend by delay is one more thinning:
+
+    visible spend    ~ Poisson(k · E_F),   E_F = ∫ p(s) · F(t − s) ds
+    spend in flight  ~ Poisson(k · W_F),   W_F = ∫ p(s) · (1 − F(t − s)) ds
+
+The two are independent, so the estimate of k, the pace and the risk check stay
+exactly as they are, with E and W replaced by these weighted sums. The fixed d
+is the special case where F jumps from 0 to 1 at d. The alternatives fail:
+
+- **Assume d = a typical value:** spend counted as visible is not there yet, so
+  k̂ comes out low and too little is counted in flight. The ε guarantee breaks.
+- **Assume d = a high quantile:** safe, but the controller pays for the tail
+  all the time; with heavy tails the underspend becomes very large.
+
+F must be known or estimated: if budget entries carry the time the spend
+happened, the center can measure delays directly. If F is an estimate, make it
+pessimistic (delays too long rather than too short). This covers independent
+delays only. A delay that hits everything at once (a settlement batch, a
+lagging budget system) is a stalled feed (§6): the stale-feed halt handles it,
+and its tolerance must cover the normal spread of d.
+
+**Token cap (a): unaffected.** Its rule counts tokens; d appears neither in the
+rule nor in its proof.
+
+**Token cap (b): needs a hard maximum.** It counts a grant as unresolved for its
+window, then assumes the grant's spend is visible. The window must be the
+longest delay that can ever occur; with a typical value, spend that arrives
+later is spend the center no longer counts. With a long tail the window holds
+budget for a long time, so (b) suits only delays with a hard, short bound.
+
+Code: `Scenario.delay_dist` and `simulate(..., center_pmf=)` in Python;
+`delay_pmf:` in `PacingController` (Elixir). Measured in
+[probabilistic.md](probabilistic.md) §3, item 14, and in the token-cap results.
+

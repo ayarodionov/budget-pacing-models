@@ -50,6 +50,12 @@ defmodule PacingController do
     * `:endgame` - finish the planned spend this many seconds before T (default 0)
     * `:message_delay_max` - largest delay, in seconds, before a new p reaches the
       clients (default 0: immediately)
+    * `:delay_pmf` - for a spend delay that varies: `[q0, q1, ..., qL]`, the
+      probability that a spend shows up in the budget after 0, 1, ..., L periods
+      (default nil: always after ceil(delay / step)). `step/2` then weights each
+      past p by how likely its spend is visible: E gets p · step · G(age), W gets
+      p · step · (1 − G(age)), with G the cumulative of the list. Make it
+      pessimistic (delays too long rather than too short) if it is an estimate.
     * `:max_silence` - the clients' silence limit L in seconds. If the connection
       drops right after a decision, its p keeps running for up to L, so the risk
       check charges each p for max(step, L) instead of one step (default nil: one
@@ -87,6 +93,7 @@ defmodule PacingController do
     message_delay_max: 0.0,
     max_rise: nil,
     max_silence: nil,
+    delay_pmf: nil,
     rise_period: nil,
     p_first: nil,
     flat_after_data: true,
@@ -110,6 +117,7 @@ defmodule PacingController do
   end
 
   defp to_float(k, v) when k in [:math, :flat_after_data], do: v
+  defp to_float(:delay_pmf, v) when is_list(v), do: Enum.map(v, &(&1 * 1.0))
   defp to_float(_k, nil), do: nil
   defp to_float(_k, v) when is_number(v), do: v * 1.0
 
@@ -128,11 +136,11 @@ defmodule PacingController do
   """
   @spec step(t, number) :: {float, boolean, t}
   def step(c, observed_spend) do
-    w = Enum.sum(c.in_flight) * c.step
-    {p, send?, c} = decide(c, c.period * c.step, observed_spend, c.observed_exposure, w)
+    {e, w} = exposures(c)
+    {p, send?, c} = decide(c, c.period * c.step, observed_spend, e, w)
 
     # p is now in flight; periods older than the delay have landed in the budget
-    {landed, in_flight} = split_landed(c.in_flight ++ [p], delay_periods(c))
+    {landed, in_flight} = split_landed(c.in_flight ++ [p], window(c))
 
     c = %{
       c
@@ -156,6 +164,26 @@ defmodule PacingController do
 
   def correct_exposure(c, p_eff),
     do: %{c | in_flight: List.replace_at(c.in_flight, -1, p_eff * 1.0)}
+
+  # periods a p is kept in the bookkeeping before it counts as surely visible
+  defp window(%{delay_pmf: nil} = c), do: delay_periods(c)
+  defp window(c), do: length(c.delay_pmf) - 1
+
+  @doc """
+  The exposures `{E, W}` that `step/2` passes to `decide/5`. With a fixed delay the
+  split is sharp; with `delay_pmf` each p in the window counts in E with weight
+  G(age) and in W with weight 1 − G(age).
+  """
+  @spec exposures(t) :: {float, float}
+  def exposures(%{delay_pmf: nil} = c), do: {c.observed_exposure, Enum.sum(c.in_flight) * c.step}
+
+  def exposures(c) do
+    g = c.delay_pmf |> Enum.scan(&(&1 + &2)) |> Enum.take(window(c))
+    pairs = Enum.zip(Enum.reverse(c.in_flight), g)
+    seen = Enum.reduce(pairs, 0.0, fn {p, gm}, acc -> acc + p * gm end)
+    unseen = Enum.reduce(pairs, 0.0, fn {p, gm}, acc -> acc + p * (1.0 - gm) end)
+    {c.observed_exposure + seen * c.step, unseen * c.step}
+  end
 
   # keep the newest `d` periods in flight, the rest has landed
   defp split_landed(ps, d) do
@@ -229,8 +257,8 @@ defmodule PacingController do
   end
 
   defp posterior(c, seen, exposure) do
+    # with a message delay, spend can show up before its exposure is counted
     {alpha, beta} =
-      # with a message delay, spend can show up before its exposure is counted
       if c.flat_after_data and seen > 0 and exposure > 0 do
         {1.0 + seen, exposure * 1.0}
       else

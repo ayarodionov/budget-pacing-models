@@ -401,6 +401,24 @@ What the results show:
       it; the cost is the budget not spent while the feed was stalled.
     - **A center restart** is not simulated here: it is a matter of storing the
       state durably ([system.md](system.md) §6), tested in Elixir.
+14. **A spend delay that varies: weight the exposure by its distribution.** Each
+    spend shows up after its own random delay. Default scenario, ε = 10⁻³,
+    40 000 runs per row:
+
+    | delay distribution | assume d = mean: overspend | assume d = 99.9 % quantile: underspend | weight by F: overspend, underspend |
+    |---|---|---|---|
+    | exponential, mean 30 s | **8.2·10⁻³** (8 × ε) | **8.4 %** (d = 207 s) | 1.1·10⁻³, 0.42 % |
+    | uniform 10–50 s | **6.2·10⁻³** | 1.05 % (d = 50 s) | 0.75·10⁻³, 0.42 % |
+    | lognormal, median 20 s, σ = 1 | **2.1·10⁻³** | **23.5 %** (d = 440 s) | 0.68·10⁻³, 0.44 % |
+
+    - **Assuming the typical delay breaks ε:** spend that has not shown up yet
+      is counted as visible, so k̂ comes out low and too little is reserved.
+    - **Assuming a high quantile is safe but pays for the tail** all the time:
+      23 % underspend with the heavy-tailed lognormal.
+    - **Weighting by F keeps the guarantee and costs almost nothing**: 0.42–0.44 %
+      underspend, against 0.40 % with a fixed 30 s delay. (1.1·10⁻³ for the
+      exponential is within simulation noise of ε.) F must be known or estimated
+      pessimistically ([system.md](system.md) §7).
 
 ## 4. Limits
 

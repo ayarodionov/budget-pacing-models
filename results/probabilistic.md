@@ -190,4 +190,23 @@ Lost link: from t0 for 60 s no message reaches the clients; they keep the last p
 | feed stalls from 3300 s to the end | 1.00e+00 | 881.5 | 1179 | 0.000 | 17.63 |
 | feed stalls from 3300 s to the end, halt | 0 | 0.0 | 0 | 7.912 | 7.91 |
 
-_Total compute: 712 s._
+## 14. Spend delay that varies
+
+Each spend shows up in the budget after its own random delay (truncated at 600 s). The center either assumes a fixed d (the mean, or the 99.9 % quantile) or weights its exposure by the true delay distribution F.
+
+| setting | P(overspend) | mean overspend, units (if over) | worst overspend, units | mean underspend % | max pacing deviation % |
+|---|---|---|---|---|---|
+| exponential, mean 30 s: assume d = mean (30 s) | 8.22e-03 | 2.8 | 13 | 0.318 | 1.34 |
+| exponential, mean 30 s: assume d = 99.9 % quantile (207 s) | 0 | 0.0 | 0 | 8.435 | 16.41 |
+| exponential, mean 30 s: weight by F | 1.12e-03 | 2.3 | 11 | 0.424 | 1.28 |
+|  |  |  |  |  |  |
+| uniform 10-50 s: assume d = mean (30 s) | 6.15e-03 | 2.9 | 16 | 0.330 | 1.26 |
+| uniform 10-50 s: assume d = 99.9 % quantile (50 s) | 0 | 0.0 | 0 | 1.049 | 2.83 |
+| uniform 10-50 s: weight by F | 7.50e-04 | 3.6 | 12 | 0.418 | 1.26 |
+|  |  |  |  |  |  |
+| lognormal, median 20 s, sigma 1: assume d = mean (33 s) | 2.13e-03 | 2.7 | 10 | 0.415 | 1.57 |
+| lognormal, median 20 s, sigma 1: assume d = 99.9 % quantile (440 s) | 0 | 0.0 | 0 | 23.467 | 31.45 |
+| lognormal, median 20 s, sigma 1: weight by F | 6.75e-04 | 3.6 | 11 | 0.441 | 1.29 |
+|  |  |  |  |  |  |
+
+_Total compute: 939 s._

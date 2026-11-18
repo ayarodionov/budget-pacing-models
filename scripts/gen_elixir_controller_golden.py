@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from pacing.controllers import BayesRiskController
-from pacing.model import Scenario, simulate
+from pacing.model import Scenario, delay_pmf, simulate
 
 OUT = Path(__file__).resolve().parent.parent / "elixir" / "controller_golden.json"
 
@@ -37,16 +37,18 @@ class Recorder:
         return p
 
 
-def case(name, scn: Scenario, seed=1, **kw):
+def case(name, scn: Scenario, seed=1, center_pmf=None, **kw):
     kw.setdefault("prior_mean", scn.spend_rate_at_p1)
     kw.setdefault("eps", 1e-3)
     rec = Recorder(BayesRiskController(scn.center_view(), tails="portable", **kw))
-    res = simulate(scn, rec, 1, seed=seed)
+    res = simulate(scn, rec, 1, seed=seed, center_pmf=center_pmf)
     ctl = rec.inner
     opts = {"budget": scn.budget, "horizon": scn.horizon, "delay": scn.delay, "step": scn.step,
             "unit_cost": scn.unit_cost, **{k: v for k, v in kw.items() if v is not None}}
     if scn.message_delay_max:
         opts["message_delay_max"] = scn.message_delay_max
+    if center_pmf is not None:
+        opts["delay_pmf"] = [float(q) for q in center_pmf]
     if "endgame_time" in opts:
         opts["endgame"] = opts.pop("endgame_time")
     print(f"{name}: final spend {res.final_spend[0]:g} / {scn.budget:g}, "
@@ -77,6 +79,11 @@ def main():
         case("max_rise 2 per 10 s, guess 10x too high", short, max_rise=2.0, rise_period=10.0,
              prior_mean=k * 10),
         case("max_silence 15 s", short, max_silence=15.0),
+        case("random spend delay (exp, mean 30 s), weighted by F",
+             replace(short, delay_dist=("exp", 30.0)), center_pmf=delay_pmf(("exp", 30.0), 5.0)),
+        case("random spend delay (uniform 10-50 s), weighted by F, step 3 s",
+             replace(short, step=3.0, delay_dist=("uniform", 10.0, 50.0)),
+             center_pmf=delay_pmf(("uniform", 10.0, 50.0), 3.0)),
     ]
     OUT.write_text(json.dumps({"generated_by": "scripts/gen_elixir_controller_golden.py",
                                "columns": ["t", "observed_spend", "observed_exposure",

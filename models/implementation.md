@@ -50,6 +50,12 @@ yet. If its exposure were added to E without its spend, k̂ would be biased low,
 and low is the dangerous direction for overspend. That exposure, W, is used
 separately: as the in-flight window in the risk check.
 
+**With a spend delay that varies.** If each spend shows up after its own random
+delay with distribution F, the sharp split at t − d becomes a weighting: each
+past p counts in E with weight F(age) and in W with weight 1 − F(age). Splitting
+by delay is one more Poisson thinning, so the Gamma posterior and the risk check
+stay exact with these E and W. Details: [system.md](system.md) §7.
+
 **With a delivery delay of p.** If a new p reaches the clients only after up to
 δ_max seconds, the window is widened: a decided p counts as in flight for
 ceil(d/Δ) + ceil(δ_max/Δ) periods, and only then moves into E. Both changes err

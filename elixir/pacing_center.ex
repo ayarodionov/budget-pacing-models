@@ -205,8 +205,15 @@ defmodule PacingCenter do
     spend_delay_ms =
       Keyword.get_lazy(opts, :spend_delay_ms, fn ->
         case Keyword.fetch!(opts, :controller) do
-          {_mod, _state} -> 0
-          ctl_opts -> round(Keyword.get(ctl_opts, :delay, 0) * 1000)
+          {_mod, _state} ->
+            0
+
+          ctl_opts ->
+            case Keyword.get(ctl_opts, :delay_pmf) do
+              # a varying delay: spend is normally at most the longest delay old
+              pmf when is_list(pmf) -> (length(pmf) - 1) * step_ms
+              nil -> round(Keyword.get(ctl_opts, :delay, 0) * 1000)
+            end
         end
       end)
 

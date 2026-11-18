@@ -96,7 +96,11 @@ counting them.
 - **Its guarantee depends on the delay.** If a charge ever reaches the budget
   later than d, the proof breaks. Version (a) has no such assumption: a late
   failure report only holds budget longer. So use (b) only if d is a hard
-  maximum, such as a guaranteed settlement time, not a typical delay.
+  maximum, such as a guaranteed settlement time, not a typical delay. If the
+  delay varies, the grant window must be its longest possible value: with the
+  mean as the window, most runs overspend when every bid is charged, and with a
+  long tail the long window holds so much budget that underspend becomes very
+  large ([system.md](system.md) §7, [results/token-cap-b.md](../results/token-cap-b.md)).
 - **It also depends on how fast grants reach the clients.** A grant must be used
   within its own period. If it arrives up to δ_max late, the client may use it
   only for Δ − margin after it arrives, with margin ≥ δ_max, and δ_max must be

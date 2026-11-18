@@ -45,8 +45,9 @@ defmodule PacingControllerTest do
       g = @golden_case
 
       Enum.reduce(g["steps"], controller(g["opts"]), fn [t, s, e, w, want_p, _], c ->
-        assert abs(c.observed_exposure - e) <= 1.0e-9, "t = #{t}: E"
-        assert abs(Enum.sum(c.in_flight) * c.step - w) <= 1.0e-9, "t = #{t}: W"
+        {ce, cw} = PacingController.exposures(c)
+        assert abs(ce - e) <= 1.0e-9, "t = #{t}: E #{ce}, Python #{e}"
+        assert abs(cw - w) <= 1.0e-9, "t = #{t}: W #{cw}, Python #{w}"
         {p, _sent?, c} = PacingController.step(c, s)
         assert close?(p, want_p), "t = #{t}: p = #{p}, Python #{want_p}"
         c

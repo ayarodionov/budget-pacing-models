@@ -71,3 +71,18 @@ No message passes either way during the outage; clients keep the last p for thei
 | 1 | 300 s from 1000 s | 0 | 0.00 | 7.87 |
 | 1 | from 3300 s to the end, p = 1 throughout | 0 | 0.00 | – |
 |  |  |  |  |  |
+
+## Spend delay that varies
+
+Each spend shows up after its own random delay. Version (a) does not use d: its cap counts tokens. The pacing controller underneath assumes d = the mean delay. Plain pacing with the cap. 20000 runs per row.
+
+| r | delay | window | overspends | mean underspend % |
+|---|---|---|---|---|
+| 0.1 | exponential, mean 30 s | mean (30 s) | 0 | 0.70 |
+| 0.1 | uniform 10-50 s | mean (30 s) | 0 | 0.70 |
+| 0.1 | lognormal, median 20 s, sigma 1 | mean (33 s) | 0 | 0.68 |
+|  |  |  |  |  |
+| 1 | exponential, mean 30 s | mean (30 s) | 0 | 0.00 |
+| 1 | uniform 10-50 s | mean (30 s) | 0 | 0.00 |
+| 1 | lognormal, median 20 s, sigma 1 | mean (33 s) | 0 | 0.00 |
+|  |  |  |  |  |
