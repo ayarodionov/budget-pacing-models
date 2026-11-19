@@ -818,3 +818,47 @@ delay of a whole period). Where it has to simplify, it says so in the report:
 for example, token cap (b) uses the longest measured delay as its window, and a
 center that cannot weight by the delay distribution assumes the longest delay.
 
+**Choosing the models.** In the `[models]` section, `run` lists the models to
+simulate; leave it out to run all three:
+
+```toml
+[models]
+run = ["probabilistic"]                    # only the probabilistic controller
+# run = ["token_cap_a", "token_cap_b"]     # only the two caps
+```
+
+| Model | Its settings | Section |
+|---|---|---|
+| `probabilistic` | `eps` (required), `recent_memory_seconds`, `max_rise`, `endgame_seconds`, `broadcast_threshold`, `halt_on_stale_feed_seconds`, `halt_on_lag_seconds` | `[campaign]`, `[center]` |
+| `token_cap_a` | `failure_report_seconds`, `wallet_tokens` | `[spend]`, `[models]` |
+| `token_cap_b` | `grant_share` (default 0.5) | `[models]` |
+
+Command-line options: `--runs N` overrides the number of runs (for a quick
+check), `--out DIR` writes the report elsewhere.
+
+**Comparing variants** of one campaign, for example with the center knowing the
+traffic profile or not: make one file per variant, each with its own
+`campaign.name`, and run each. The reports land side by side in
+`results/scenarios/`.
+
+**From Python**, for sweeps without editing files:
+
+```python
+from dataclasses import replace
+from pacing.scenario_file import load, run_model, report
+
+plan = load("scenarios/my-campaign.toml")        # checks the file first
+
+res, msgs_per_hour = run_model(plan, "token_cap_a", runs=500)
+print(res.summary(plan.scn.budget))
+
+print(report(plan, {m: run_model(plan, m) for m in plan.models}))   # the same table as the command
+
+for eps in (1e-2, 1e-3, 1e-4):                   # a sweep
+    plan.eps = eps
+    res, _ = run_model(plan, "probabilistic", runs=500)
+    print(eps, res.summary(plan.scn.budget)["overspend_prob"])
+
+plan.scn = replace(plan.scn, budget=2 * plan.scn.budget)   # change the scenario itself
+```
+
