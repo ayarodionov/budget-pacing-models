@@ -672,6 +672,22 @@ call fails without it; "core" means it has a default but defines the scenario
 (the defaults are the example scenario of §1); "optional" means the default
 switches the feature off or keeps the base model.
 
+The parameters are grouped by the part of the simulation they belong to. The
+brackets in each title name the Python object that holds them and the file
+where it is defined.
+
+| Section | Answers the question | In the code |
+|---|---|---|
+| 8.1 The world | What is the situation? Budget, campaign length, traffic, delays: what the center is given and cannot change | the fields of one `Scenario` object; `scn.center_view()` gives the center only the part it may know |
+| 8.2 The center's controller | How does the center decide? The settings of the algorithm that chooses p | the arguments of a controller, such as `BayesRiskController(...)` |
+| 8.3 The run | How is the experiment carried out? Which model (cap (a) or (b)), how many campaigns, and events injected on purpose, such as an outage | the arguments of `simulate` or `simulate_with_backstop` |
+| 8.4 Traffic that varies | What changes for the seasonal models? All optional; without them traffic is constant | spread over the three above; the column "Where" says which |
+
+In the tables: an empty cell in the P, (a) or (b) column means that model
+ignores the parameter; a note next to ✓ gives a role or limit specific to that
+model; a default of "none (…)" means the feature is off, and the brackets say
+what happens instead.
+
 ### 8.1 The world (`Scenario`, `src/pacing/model.py`)
 
 | Parameter | Symbol | Meaning | Default | Required? | P | (a) | (b) |
