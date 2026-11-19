@@ -96,6 +96,23 @@ end. Middle: cumulative spend follows the dashed even-pace line. Right: the last
 10 minutes — the budget left approaches zero but stays above it; the small
 remainder is the price of the 30 s delay.
 
+## Your own scenario
+
+To run the models on a real campaign, start from
+[scenarios/minimal.toml](scenarios/minimal.toml) (only the 8 required fields) or
+[scenarios/example.toml](scenarios/example.toml) (every field, with comments), fill in your measurements
+(budget and length, traffic and its hourly profile, the share of bids charged,
+the spend-delay percentiles, the control period and delays of your system) and
+run
+
+```bash
+uv run python -m pacing.scenario_file scenarios/my-campaign.toml
+```
+
+The report goes to `results/scenarios/`. Which fields are required and how to
+measure them: the comments in the template and
+[models/system.md](models/system.md) §8.6.
+
 ## Running
 
 ```bash
@@ -104,6 +121,7 @@ uv run python -m pacing.experiments    # probabilistic controller, ~16 min (--qu
 uv run python -m pacing.backstop       # token cap, versions (a) and (b), ~7 min (--quick: ~1 min)
 uv run python -m pacing.overview       # README comparison chart, ~80 s
 uv run python -m pacing.seasonal_experiments   # seasonal models, 30-day campaigns, ~8 min
+uv run python -m pacing.scenario_file scenarios/example.toml   # a scenario file, ~10 s
 make -C elixir test                    # Elixir: math vs scipy; controller, token cap vs Python; registration
 make -C elixir bench                   # pure Elixir vs NIF speed
 ```

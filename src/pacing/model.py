@@ -47,8 +47,9 @@ class Scenario:
     message_delay_max: float = 0.0  # delta_max >= delta, the bound the center plans with
     # clients ignore a p older than this (needs synchronised clocks); None = no check
     message_age_limit: float | None = None
-    # random spend delay instead of the fixed d: ("exp", mean), ("uniform", lo, hi) or
-    # ("lognormal", median, sigma), in seconds; truncated at 600 s. None = fixed d.
+    # random spend delay instead of the fixed d: ("exp", mean), ("uniform", lo, hi),
+    # ("lognormal", median, sigma) or ("empirical", ((delay, cdf), ...)), in seconds;
+    # the parametric ones are truncated at 600 s. None = fixed d.
     # ``delay`` is then what a center with a fixed-delay model assumes.
     delay_dist: tuple | None = None
 
@@ -236,10 +237,12 @@ def simulate(
         hist = max(hist, lc + 1)
         e_full = np.zeros(n_runs)  # exposure of steps old enough to be surely visible
     ring_p = np.zeros((n_runs, hist))
-    if (rate_profile is not None or center_profile is not None) and (
-            scn.message_delay or center_pmf is not None):
-        raise ValueError("traffic profiles are simulated with a fixed spend delay and no delivery delay")
+    if (rate_profile is not None or center_profile is not None) and scn.message_delay:
+        raise ValueError("traffic profiles are simulated without a delivery delay of p")
     cf = center_profile  # the center's belief about the traffic of each step
+    # with both a delay distribution and a profile, the center splits each step's
+    # exposure p * step * profile by the delay distribution
+    ring_pc = np.zeros((n_runs, hist)) if (center_pmf is not None and cf is not None) else None
 
     obs_spend = np.zeros(n_runs, dtype=np.int64)
     obs_exposure = np.zeros(n_runs)
@@ -266,7 +269,8 @@ def simulate(
         if i < fo0 or i >= fo1:
             seen = obs_spend.copy()  # the feed is current; during an outage it stays frozen
         if center_pmf is not None:
-            recent = ring_p[:, (i - 1 - lags) % hist]  # p of steps i-1, i-2, ...
+            src = ring_p if ring_pc is None else ring_pc
+            recent = src[:, (i - 1 - lags) % hist]  # p (times the profile) of steps i-1, i-2, ...
             obs_exposure = e_full + (recent * g_cdf).sum(axis=1) * dt
             inflight = (recent * (1.0 - g_cdf)).sum(axis=1) * dt
         p = np.clip(
@@ -277,6 +281,8 @@ def simulate(
         if halt_on_stale_feed is not None and fo0 <= i < fo1 and (i - fo0) * dt > halt_on_stale_feed:
             p = np.zeros(n_runs)  # the feed is too old: halt until it is fresh again
         ring_p[:, i % hist] = p
+        if ring_pc is not None:
+            ring_pc[:, i % hist] = p * cf[i]
         p_clients = p
         if i == lo0 - 1:
             p_kept = p.copy()
@@ -324,7 +330,7 @@ def simulate(
                 inflight -= ring_p[:, j % hist] * dt * cf[j]
                 np.maximum(inflight, 0.0, out=inflight)
         elif i - lc >= 0:
-            e_full += ring_p[:, (i - lc) % hist] * dt
+            e_full += (ring_p if ring_pc is None else ring_pc)[:, (i - lc) % hist] * dt
 
         aim = (i + 1) / n_steps if target is None else target[i]
         dev = np.abs(true_spend / scn.budget_events - aim)
@@ -346,8 +352,10 @@ def simulate(
 def delay_pmf(dist: tuple, step: float, cap: float = 600.0) -> np.ndarray:
     """P(a spend shows up after exactly L steps), L = 0, 1, ...: L = ceil(delay / step).
 
-    ``dist``: ("fixed", d), ("exp", mean), ("uniform", lo, hi) or ("lognormal",
-    median, sigma), in seconds. Delays above ``cap`` are put at the cap.
+    ``dist``: ("fixed", d), ("exp", mean), ("uniform", lo, hi), ("lognormal",
+    median, sigma), or ("empirical", ((delay, cdf), ...)) with measured points of
+    the cumulative distribution, increasing to cdf = 1 at the longest delay (linear
+    in between). In seconds. Delays above ``cap`` are put at the cap.
     """
     from scipy import stats
 
@@ -356,6 +364,12 @@ def delay_pmf(dist: tuple, step: float, cap: float = 600.0) -> np.ndarray:
         pmf = np.zeros(math.ceil(dist[1] / step - 1e-9) + 1)
         pmf[-1] = 1.0
         return pmf
+    if kind == "empirical":
+        ds, cs = (np.array(v, dtype=float) for v in zip(*dist[1]))
+        lmax = math.ceil(ds[-1] / step - 1e-9)
+        cdf = np.interp(np.arange(lmax + 1) * step, ds, cs, left=0.0, right=1.0)
+        pmf = np.diff(cdf, prepend=0.0)
+        return pmf / pmf.sum()
     f = {"exp": lambda: stats.expon(scale=dist[1]),
          "uniform": lambda: stats.uniform(loc=dist[1], scale=dist[2] - dist[1]),
          "lognormal": lambda: stats.lognorm(s=dist[2], scale=dist[1])}[kind]()

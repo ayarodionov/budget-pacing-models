@@ -1,0 +1,78 @@
+# A scenario with real-world measurements, for
+#     uv run python -m pacing.scenario_file scenarios/example.toml
+# The results go to results/scenarios/<name>.md.
+#
+# Copy this file and replace the values with your own measurements.
+# REQUIRED fields must be present; OPTIONAL ones can be deleted (the default is
+# given). All times are in seconds unless the name says otherwise.
+# The numbers below are an example: a one-week campaign with the default traffic.
+
+[campaign]
+name = "example"                # OPTIONAL, default: the file name. Names the results file
+budget = 840_000                # REQUIRED. B, in budget units
+length_days = 7                 # REQUIRED: exactly one of length_days, length_hours, length_seconds
+start_weekday = "Monday"        # OPTIONAL, default Monday. Matters when traffic varies over the week
+start_hour = 0                  # OPTIONAL, default 0 (midnight), local time of the traffic profile
+unit_cost = 1.0                 # OPTIONAL, default 1. c: budget units per charged bid
+eps = 0.01                      # REQUIRED for the probabilistic model: allowed overspend probability
+pace_goal = "traffic"           # OPTIONAL, default "traffic": "traffic" (follow the traffic) or "time" (spend evenly)
+
+[traffic]
+request_rate = 1000             # REQUIRED. λ: bid requests per second, averaged over a week
+profile = "builtin"             # OPTIONAL, default "none" (constant traffic):
+                                #   "builtin": a daily cosine and quieter weekends (the three fields below)
+                                #   "hourly":  your measurements, 168 values in `hourly`
+daily_amplitude = 0.6           # OPTIONAL, builtin only, default 0.6: busiest hour = 1 + amplitude
+peak_hour = 20                  # OPTIONAL, builtin only, default 20: busiest hour of the day
+weekend = 0.7                   # OPTIONAL, builtin only, default 0.7: weekend traffic relative to weekdays
+# hourly = [ ... ]              # REQUIRED if profile = "hourly": requests per hour for each hour of the
+                                # week, Monday 00:00-01:00 first, 168 values. Any scale; it is normalised.
+
+[spend]
+charged_share = 0.1             # REQUIRED. r: charged bids / bids made
+failure_report_seconds = 5      # OPTIONAL, token cap (a), default 0: delay before a failed bid is reported
+# Spend delay: REQUIRED, exactly one of the two forms.
+# delay_seconds = 30            #   a fixed delay, or
+[spend.delay_percentiles]       #   measured: time from the bid to its appearance in the budget.
+p50 = 20                        #   REQUIRED in this form: the median
+p90 = 45                        #   OPTIONAL percentiles (add the ones you have; they must increase)
+p99 = 90
+p999 = 150
+max = 240                       #   REQUIRED in this form: the longest delay ever seen (or guaranteed)
+
+[infrastructure]
+control_period_seconds = 60     # REQUIRED. Δ: how often the center recomputes and sends p.
+                                # For campaigns of a week or more, 60 s keeps the simulation fast.
+delivery_delay_seconds = 0      # OPTIONAL, default 0. δ: time for a new p to reach the clients
+# delivery_delay_max_seconds = 0  # OPTIONAL, default = delivery_delay_seconds: the bound the center plans with
+# message_age_limit_seconds = 2 # OPTIONAL, default: no age check. Clients ignore older messages
+# silence_limit_seconds = 180   # OPTIONAL, default 3 control periods + delivery_delay_max
+# link_outage = [300_000, 300_600]  # OPTIONAL: [start, end] s from the start, no messages either way
+# feed_outage = [500_000, 501_000]  # OPTIONAL: [start, end], the budget feed stops (probabilistic model)
+
+[center]
+prior_mean = 100                # REQUIRED. Rough guess of the spend rate at p = 1 (charged bids/s),
+                                # e.g. from the last campaign. Used only until spend shows up.
+profile_belief = "true"         # OPTIONAL, default "true" if a traffic profile is given, else "none":
+                                #   "true"   the center knows the traffic profile (from history)
+                                #   "none"   it assumes constant traffic
+                                #   "hourly" it believes a different profile: give `hourly_belief` (168 values)
+delay_belief = "true"           # OPTIONAL, only with delay_percentiles, default "true": the center weights
+                                # its bookkeeping by the measured delays; or a number of seconds it assumes
+recent_memory_seconds = 3600    # OPTIONAL: estimate the current rate from recent data (half-life).
+                                # Recommended when profile_belief = "none" (the risk check needs it)
+# max_rise = 1.5                # OPTIONAL: p may grow at most ×1.5 per spend delay (guards unplanned delays)
+# endgame_seconds = 60          # OPTIONAL: finish the planned spend this long before the end
+# broadcast_threshold = 0.02    # OPTIONAL: send p only when it changes by more than 2 %
+# plan_for_silence = true       # OPTIONAL, default true: the risk check allows for the silence limit
+# halt_on_stale_feed_seconds = 60  # OPTIONAL: halt if the budget feed is older than d + this
+# halt_on_lag_seconds = 60      # OPTIONAL: halt if the measured delivery delay exceeds plan + this
+
+[models]
+run = ["probabilistic", "token_cap_a", "token_cap_b"]   # OPTIONAL, default: all three
+# wallet_tokens = 200           # OPTIONAL, token cap (a): tokens clients may hold in total
+grant_share = 0.5               # OPTIONAL, token cap (b), default 0.5
+
+[run]
+runs = 1000                     # OPTIONAL, default 1000: simulated campaigns per model
+seed = 1                        # OPTIONAL, default 1

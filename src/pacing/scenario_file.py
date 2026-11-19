@@ -1,0 +1,376 @@
+"""Run the models on a scenario described in a TOML file with real-world measurements.
+
+Run:  uv run python -m pacing.scenario_file scenarios/example.toml [--runs N]
+      -> results/scenarios/<name>.md
+
+The file format is documented in ``scenarios/example.toml`` (every field, with
+what is required and what is optional) and in models/system.md §8.6. This module
+reads the file, checks it, turns it into the simulator's parameters, runs the
+chosen models and writes one table.
+"""
+
+from __future__ import annotations
+
+import argparse
+import tomllib
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+
+import numpy as np
+
+from .backstop import simulate_with_backstop
+from .model import Scenario, delay_pmf, simulate
+from .seasonal import DAY, SeasonalController, SeasonalPacer, traffic_profile, traffic_target
+
+WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+MODELS = ("probabilistic", "token_cap_a", "token_cap_b")
+PERCENTILES = (("p50", 0.5), ("p90", 0.9), ("p99", 0.99), ("p999", 0.999))
+
+
+class ScenarioError(ValueError):
+    """The scenario file is incomplete or inconsistent."""
+
+
+@dataclass
+class Plan:
+    """Everything needed to run the models, built from a scenario file."""
+
+    name: str
+    scn: Scenario  # the world; ``delay`` = what a center with a fixed-delay model assumes
+    models: list[str]
+    runs: int
+    seed: int
+    eps: float | None
+    pace_goal: str
+    prior_mean: float
+    rate_profile: np.ndarray | None
+    center_profile: np.ndarray | None
+    center_pmf: np.ndarray | None
+    controller: dict = field(default_factory=dict)  # extra controller options
+    sim: dict = field(default_factory=dict)  # extra simulate options (probabilistic)
+    cap_sim: dict = field(default_factory=dict)  # extra simulate_with_backstop options
+    failure_delay: float = 0.0
+    wallet: int | None = None
+    grant_share: float = 0.5
+    cap_b_window: float = 0.0
+    notes: list[str] = field(default_factory=list)  # warnings and fallbacks, for the report
+
+
+# ------------------------------------------------------------------ reading
+
+
+def _get(d: dict, key: str, kind=float, default=..., where: str = ""):
+    if key not in d:
+        if default is ...:
+            raise ScenarioError(f"missing required field {where}{key}")
+        return default
+    v = d[key]
+    try:
+        return kind(v)
+    except (TypeError, ValueError):
+        raise ScenarioError(f"{where}{key} must be a {kind.__name__}, got {v!r}") from None
+
+
+def _hour_of_week(hourly) -> np.ndarray:
+    a = np.asarray(hourly, dtype=float)
+    if a.shape != (168,):
+        raise ScenarioError(f"an hourly profile needs 168 values (24 h × 7 days from Monday 00:00), got {a.size}")
+    if np.any(a < 0) or a.sum() <= 0:
+        raise ScenarioError("an hourly profile must be non-negative and not all zero")
+    return a / a.mean()
+
+
+def _step_values(start: float, horizon: float, step: float, fn) -> np.ndarray:
+    """Average of fn(t) over each control step; t in seconds from Monday 00:00."""
+    n = int(round(horizon / step))
+    sub = (np.arange(8) + 0.5) / 8 * step
+    t = start + np.arange(n)[:, None] * step + sub[None, :]
+    return fn(t).mean(axis=1)
+
+
+def _profile(spec: dict, start: float, horizon: float, step: float, where: str) -> np.ndarray | None:
+    kind = str(spec.get("profile", "none")).lower()
+    if kind == "none":
+        return None
+    if kind == "builtin":
+        kw = {k: float(spec[k]) for k in ("daily_amplitude", "peak_hour", "weekend") if k in spec}
+        return _step_values(start, horizon, step, lambda t: traffic_profile(t, **kw))
+    if kind == "hourly":
+        hw = _hour_of_week(_get(spec, "hourly", list, where=where))
+        return _step_values(start, horizon, step, lambda t: hw[(np.floor(t / 3600).astype(int)) % 168])
+    raise ScenarioError(f'{where}profile must be "none", "builtin" or "hourly", got {kind!r}')
+
+
+def _delay(spend: dict) -> tuple[float, tuple | None]:
+    """(fixed delay or None, empirical distribution or None) from [spend]."""
+    has_fixed = "delay_seconds" in spend
+    pct = spend.get("delay_percentiles")
+    if has_fixed == (pct is not None):
+        raise ScenarioError("give exactly one of spend.delay_seconds and [spend.delay_percentiles]")
+    if has_fixed:
+        d = _get(spend, "delay_seconds", where="spend.")
+        if d < 0:
+            raise ScenarioError("spend.delay_seconds must be >= 0")
+        return d, None
+    where = "spend.delay_percentiles."
+    pts = [(0.0, 0.0)]
+    for key, q in PERCENTILES:
+        if key in pct:
+            pts.append((_get(pct, key, where=where), q))
+    pts.append((_get(pct, "max", where=where), 1.0))
+    if len(pts) < 3:
+        raise ScenarioError("spend.delay_percentiles needs at least p50 and max")
+    ds = [d for d, _ in pts]
+    if any(b < a for a, b in zip(ds, ds[1:])):
+        raise ScenarioError(f"spend.delay_percentiles must increase: {ds}")
+    return None, ("empirical", tuple(pts))
+
+
+def load(path: str | Path) -> Plan:
+    path = Path(path)
+    with open(path, "rb") as f:
+        cfg = tomllib.load(f)
+    camp, traffic, spend = cfg.get("campaign", {}), cfg.get("traffic", {}), cfg.get("spend", {})
+    infra, center, models_cfg, run = (cfg.get(k, {}) for k in ("infrastructure", "center", "models", "run"))
+    notes: list[str] = []
+
+    # --- campaign
+    budget = _get(camp, "budget", where="campaign.")
+    lengths = [k for k in ("length_days", "length_hours", "length_seconds") if k in camp]
+    if len(lengths) != 1:
+        raise ScenarioError("give exactly one of campaign.length_days, length_hours, length_seconds")
+    horizon = _get(camp, lengths[0], where="campaign.") * {"length_days": DAY, "length_hours": 3600.0,
+                                                           "length_seconds": 1.0}[lengths[0]]
+    wd = str(camp.get("start_weekday", "monday")).lower()
+    if wd not in WEEKDAYS:
+        raise ScenarioError(f"campaign.start_weekday must be a day name, got {wd!r}")
+    start = WEEKDAYS.index(wd) * DAY + _get(camp, "start_hour", default=0.0) * 3600.0
+    unit_cost = _get(camp, "unit_cost", default=1.0)
+    pace_goal = str(camp.get("pace_goal", "traffic"))
+    if pace_goal not in ("traffic", "time"):
+        raise ScenarioError('campaign.pace_goal must be "traffic" or "time"')
+
+    # --- models to run
+    models = [m.lower() for m in models_cfg.get("run", list(MODELS))]
+    for m in models:
+        if m not in MODELS:
+            raise ScenarioError(f"models.run: unknown model {m!r}; use {', '.join(MODELS)}")
+    eps = _get(camp, "eps", default=None) if "eps" in camp else None
+    if "probabilistic" in models and eps is None:
+        raise ScenarioError("campaign.eps is required for the probabilistic model")
+
+    # --- infrastructure
+    step = _get(infra, "control_period_seconds", where="infrastructure.")
+    if step <= 0 or horizon / step < 2:
+        raise ScenarioError("infrastructure.control_period_seconds must be > 0 and well below the campaign length")
+    delta = _get(infra, "delivery_delay_seconds", default=0.0)
+    delta_max = _get(infra, "delivery_delay_max_seconds", default=delta)
+    if delta_max < delta:
+        notes.append(f"delivery_delay_max ({delta_max:g} s) is below the true delivery delay ({delta:g} s): "
+                     "the center does not plan for the whole delay, so overspend is expected")
+    age_limit = _get(infra, "message_age_limit_seconds", default=None) if "message_age_limit_seconds" in infra else None
+    silence = _get(infra, "silence_limit_seconds", default=3 * step + delta_max)
+
+    # --- traffic
+    request_rate = _get(traffic, "request_rate", where="traffic.")
+    rate_profile = _profile(traffic, start, horizon, step, "traffic.")
+    if rate_profile is not None and delta > 0:
+        raise ScenarioError("a traffic profile together with a delivery delay of p is not supported by the simulator")
+
+    # --- spend
+    r = _get(spend, "charged_share", where="spend.")
+    if not 0 < r <= 1:
+        raise ScenarioError("spend.charged_share must be in (0, 1]")
+    fixed_d, dist = _delay(spend)
+    failure_delay = _get(spend, "failure_report_seconds", default=0.0)
+
+    # --- the center
+    prior_mean = _get(center, "prior_mean", where="center.")
+    belief = str(center.get("profile_belief", "true" if rate_profile is not None else "none")).lower()
+    if belief == "true":
+        if rate_profile is None:
+            raise ScenarioError('center.profile_belief = "true" needs a traffic profile')
+        center_profile = rate_profile
+    elif belief == "none":
+        center_profile = None
+    elif belief == "hourly":
+        center_profile = _profile({"profile": "hourly", "hourly": center.get("hourly_belief")},
+                                  start, horizon, step, "center.")
+    else:
+        raise ScenarioError('center.profile_belief must be "true", "none" or "hourly"')
+
+    center_pmf = None
+    if dist is not None:
+        dbelief = center.get("delay_belief", "true")
+        pmf_true = delay_pmf(dist, step)
+        longest = dist[1][-1][0]
+        mean = float((np.arange(len(pmf_true)) * pmf_true).sum() * step)
+        if str(dbelief).lower() == "true":
+            if delta_max > 0:
+                notes.append("the center cannot weight by the delay distribution together with a delivery "
+                             f"delay of p; it assumes the longest delay ({longest:g} s) instead")
+                assumed = longest
+            else:
+                center_pmf, assumed = pmf_true, mean
+        else:
+            assumed = float(dbelief)
+        world_delay = assumed
+    else:
+        world_delay = fixed_d
+        longest = fixed_d
+
+    scn = Scenario(budget=budget, horizon=horizon, request_rate=request_rate,
+                   realization=r, delay=world_delay, step=step, unit_cost=unit_cost, message_delay=delta,
+                   message_delay_max=delta_max, message_age_limit=age_limit, delay_dist=dist)
+
+    # --- controller and run options
+    controller = {}
+    for key, opt in (("recent_memory_seconds", "risk_half_life"), ("max_rise", "max_rise"),
+                     ("endgame_seconds", "endgame_time"), ("broadcast_threshold", "broadcast_threshold")):
+        if key in center:
+            controller[opt] = _get(center, key)
+    if center.get("plan_for_silence", True):
+        controller["max_silence"] = silence
+    sim, cap_sim = {}, {}
+    for key, opt in (("link_outage", "link_outage"), ("feed_outage", "feed_outage")):
+        if key in infra:
+            v = infra[key]
+            if not (isinstance(v, list) and len(v) == 2 and v[0] < v[1]):
+                raise ScenarioError(f"infrastructure.{key} must be [start, end] in seconds from the start")
+            sim[opt] = (float(v[0]), float(v[1]))
+    if "link_outage" in sim:
+        if delta > 0:
+            raise ScenarioError("a link outage together with a delivery delay of p is not supported")
+        sim["silence_limit"] = silence
+        cap_sim = {"link_outage": sim["link_outage"], "silence_limit": silence}
+    if "halt_on_stale_feed_seconds" in center:
+        sim["halt_on_stale_feed"] = _get(center, "halt_on_stale_feed_seconds")
+    if "halt_on_lag_seconds" in center:
+        sim["halt_on_lag"] = _get(center, "halt_on_lag_seconds")
+    if "feed_outage" in sim and any(m != "probabilistic" for m in models):
+        notes.append("the token-cap simulation has no budget-feed outage; it is applied to the probabilistic model only")
+
+    wallet = int(models_cfg["wallet_tokens"]) if "wallet_tokens" in models_cfg else None
+    grant_share = _get(models_cfg, "grant_share", default=0.5)
+    if "token_cap_b" in models:
+        if delta_max >= step:
+            raise ScenarioError("token cap (b) needs delivery_delay_max_seconds below the control period")
+        if dist is not None:
+            notes.append(f"token cap (b) counts each grant for the longest delay ({longest:g} s): its guarantee "
+                         "needs a hard maximum")
+
+    # --- feasibility
+    k = request_rate * r
+    need = budget / unit_cost / (k * horizon)
+    if need > 1:
+        notes.append(f"the budget cannot be spent even at p = 1 (it needs p ≈ {need:.2f} on average)")
+    if pace_goal == "time" and rate_profile is not None:
+        worst = budget / unit_cost / horizon / (k * rate_profile.min())
+        if worst > 1:
+            notes.append(f"spending evenly needs p ≈ {worst:.2f} in the quietest hour: not possible, "
+                         "the quiet hours will run at p = 1 (see models/seasonal/probabilistic.md §3)")
+
+    return Plan(name=str(camp.get("name", path.stem)), scn=scn, models=models,
+                runs=int(_get(run, "runs", default=1000)), seed=int(_get(run, "seed", default=1)),
+                eps=eps, pace_goal=pace_goal, prior_mean=prior_mean, rate_profile=rate_profile,
+                center_profile=center_profile, center_pmf=center_pmf, controller=controller, sim=sim,
+                cap_sim=cap_sim, failure_delay=failure_delay, wallet=wallet, grant_share=grant_share,
+                cap_b_window=longest, notes=notes)
+
+
+# ------------------------------------------------------------------ running
+
+
+def _target(plan: Plan) -> np.ndarray | None:
+    if plan.pace_goal == "traffic" and plan.rate_profile is not None:
+        return traffic_target(plan.rate_profile)
+    return None  # even in time
+
+
+def run_model(plan: Plan, model: str, runs: int | None = None):
+    """(result, broadcasts per hour or None) for one model."""
+    n = runs or plan.runs
+    scn = plan.scn
+    common = dict(rate_profile=plan.rate_profile, center_profile=plan.center_profile, target=_target(plan))
+    if model == "probabilistic":
+        ctl = SeasonalController(scn.center_view(), prior_mean=plan.prior_mean, eps=plan.eps,
+                                 profile=plan.center_profile, pace_goal=plan.pace_goal, **plan.controller)
+        res = simulate(scn, ctl, n, seed=plan.seed, center_pmf=plan.center_pmf, **common, **plan.sim)
+        return res, ctl.broadcasts.mean() / (scn.horizon / 3600)
+    # under a cap: plain pacing, no risk check
+    pacer_kw = {k: v for k, v in plan.controller.items() if k in ("endgame_time", "max_rise")}
+    half_life = plan.controller.get("risk_half_life")
+    if model == "token_cap_b":
+        scn = replace(scn, delay=plan.cap_b_window)  # (b) counts a grant for the longest delay
+    pacer = SeasonalPacer(scn.center_view(), prior_mean=plan.prior_mean, profile=plan.center_profile,
+                          pace_goal=plan.pace_goal, half_life=half_life, **pacer_kw)
+    if model == "token_cap_a":
+        res = simulate_with_backstop(scn, pacer, n, failure_delay=plan.failure_delay, seed=plan.seed,
+                                     wallet=plan.wallet, **common, **plan.cap_sim)
+    else:
+        res = simulate_with_backstop(scn, pacer, n, seed=plan.seed, mode="grants",
+                                     grant_share=plan.grant_share, **common, **plan.cap_sim)
+    return res, None
+
+
+def report(plan: Plan, results: dict) -> str:
+    scn = plan.scn
+    lines = [f"# Scenario: {plan.name}", "",
+             "Generated by `uv run python -m pacing.scenario_file`. "
+             "Model descriptions: [models/system.md](../../models/system.md).", "",
+             "## The scenario as simulated", "",
+             f"- campaign: B = {scn.budget:,.0f} units over {scn.horizon / DAY:g} days, "
+             f"control period {scn.step:g} s, pacing goal: "
+             f"{'follow the traffic' if plan.pace_goal == 'traffic' else 'even in time'}",
+             f"- traffic: λ = {scn.request_rate:g} requests/s, charged share r = {scn.realization:g}, "
+             f"profile: {'none (constant)' if plan.rate_profile is None else 'varies'}; "
+             f"the center's belief: {'none' if plan.center_profile is None else ('the true profile' if plan.center_profile is plan.rate_profile else 'a different profile')}",
+             f"- spend delay: {'fixed ' + format(scn.delay, 'g') + ' s' if scn.delay_dist is None else 'measured distribution (longest ' + format(plan.cap_b_window, 'g') + ' s)'}; "
+             f"the center {'weights by the distribution' if plan.center_pmf is not None else 'assumes ' + format(scn.delay, 'g') + ' s'}",
+             f"- delivery delay of p: {scn.message_delay:g} s (planned for {scn.message_delay_max:g} s)",
+             f"- {plan.runs} runs per model, seed {plan.seed}", ""]
+    if plan.notes:
+        lines += ["**Notes:**", ""] + [f"- {n}" for n in plan.notes] + [""]
+    lines += ["## Results", "",
+              "| model | P(overspend) | 95% upper bound | worst overspend, units | mean underspend, units | "
+              "mean underspend % | p95 underspend % | max deviation from the target % | p messages per hour |",
+              "|---|---|---|---|---|---|---|---|---|"]
+    names = {"probabilistic": f"probabilistic (ε = {plan.eps:g})" if plan.eps else "probabilistic",
+             "token_cap_a": f"token cap (a), failure reports after {plan.failure_delay:g} s",
+             "token_cap_b": f"token cap (b), grant share {plan.grant_share:g}"}
+    for model, (res, msgs) in results.items():
+        s = res.summary(scn.budget)
+        over = res.final_spend - scn.budget
+        p = f"{s['overspend_prob']:.2e}" if s["overspend_prob"] else "0"
+        lines.append(f"| {names[model]} | {p} | {s['overspend_prob_upper95']:.1e} | {max(0.0, float(over.max())):.0f} | "
+                     f"{s['mean_underspend_pct'] * scn.budget / 100:.0f} | {s['mean_underspend_pct']:.3f} | "
+                     f"{s['p95_underspend_pct']:.3f} | {s['mean_max_pace_dev_pct']:.2f} | "
+                     f"{'–' if msgs is None else format(msgs, '.1f')} |")
+    lines += ["", "The target for the deviation is the traffic-following curve when the pacing goal is "
+              "\"traffic\" and a profile is given, otherwise even spending in time.", ""]
+    return "\n".join(lines)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("file")
+    ap.add_argument("--runs", type=int, help="override run.runs")
+    ap.add_argument("--out", default="results/scenarios")
+    args = ap.parse_args()
+    try:
+        plan = load(args.file)
+    except ScenarioError as e:
+        raise SystemExit(f"scenario file error: {e}")
+    if args.runs:
+        plan.runs = args.runs
+    results = {m: run_model(plan, m) for m in plan.models}
+    text = report(plan, results)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{plan.name}.md").write_text(text)
+    print(text)
+    print(f"written to {out / (plan.name + '.md')}")
+
+
+if __name__ == "__main__":
+    main()

@@ -785,3 +785,36 @@ res = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=
 print(res.summary(scn.budget))
 ```
 
+### 8.6 Scenario files: running the models on your own measurements
+
+Instead of writing Python, describe a real campaign in a TOML file and run
+
+    uv run python -m pacing.scenario_file scenarios/example.toml
+
+[scenarios/minimal.toml](../scenarios/minimal.toml) is the simplest possible
+file: only the 8 required fields (budget, length, ε, request rate, charged share,
+spend delay, control period, guess of k), with every other field at its default.
+[scenarios/example.toml](../scenarios/example.toml) is the full template: every
+field has a comment saying what it is, how to measure it, and whether it is
+required. Note that scenario files plan for a lost link by default
+(`plan_for_silence = true`), which costs about 0.1 point of underspend; set it to
+false to reproduce the base results exactly. The results go to `results/scenarios/<name>.md`, one table with all
+the chosen models side by side, plus notes on anything the simulator could not
+do as asked.
+
+| File section | What to provide | Required |
+|---|---|---|
+| `[campaign]` | budget, length, start day and hour, cost per bid, ε, pacing goal | budget, length; ε for the probabilistic model |
+| `[traffic]` | request rate; profile: none, built-in, or 168 hourly values measured over a week | request rate |
+| `[spend]` | charged share r; the spend delay, fixed or as measured percentiles (p50, p90, p99, p999, max); failure-report delay | r and the delay |
+| `[infrastructure]` | control period; delivery delay of p and its planned bound; age limit; silence limit; outages to test | control period |
+| `[center]` | the guess of k; what it believes about the profile and the delays; short memory, rise limit, end-game, halts | the guess |
+| `[models]`, `[run]` | which models; wallet, grant share; runs, seed | nothing |
+
+The loader refuses files that are incomplete or inconsistent, with a message
+naming the field, and refuses combinations the simulator cannot do (a traffic
+profile together with a delivery delay of p; token cap (b) with a delivery
+delay of a whole period). Where it has to simplify, it says so in the report:
+for example, token cap (b) uses the longest measured delay as its window, and a
+center that cannot weight by the delay distribution assumes the longest delay.
+

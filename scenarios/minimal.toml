@@ -1,0 +1,23 @@
+# The simplest scenario: only the required fields. Everything else uses its
+# default (constant traffic, fixed spend delay, all three models, 1000 runs).
+# The full list of fields is in example.toml.
+#
+#     uv run python -m pacing.scenario_file scenarios/minimal.toml
+
+[campaign]
+budget = 5000           # budget units
+length_hours = 1
+eps = 0.001             # allowed overspend probability (probabilistic model)
+
+[traffic]
+request_rate = 1000     # bid requests per second
+
+[spend]
+charged_share = 0.1     # share of bids that are charged
+delay_seconds = 30      # time until a charge shows in the budget
+
+[infrastructure]
+control_period_seconds = 5
+
+[center]
+prior_mean = 100        # rough guess: charged bids per second at p = 1
