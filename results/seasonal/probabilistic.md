@@ -16,7 +16,7 @@ A 30-day campaign starting on a Monday at 00:00: B = 3,600,000 units, k0 = 100 s
 | ends at 08:00 (low traffic), profile known | 1.03e-02 | 1.3e-02 | 11 | 17 | 0.0005 | 0.05 |
 | ends at 08:00 (low traffic), profile unknown | 0 | 7.5e-04 | 0 | 971 | 0.0270 | 0.53 |
 
-![First week: traffic, p and spend rate](probabilistic-week.png)
+![First week, following the traffic, profile known and unknown: traffic, p and spend rate](probabilistic-week.png)
 
 ## Spending evenly in time
 
@@ -32,5 +32,5 @@ The pacing goal changes from following the traffic to a constant spend rate: p =
 | budget × 50: even in time, profile known | 0 | 0 | 898704 | 4.78 | 0.4012–1.0000 | 6% | 2.7 |
 | budget × 50: follow the traffic, profile known | 1.15e-02 | 124 | 249 | 1.45 | 0.6901–0.6901 | 0% | 0.0 |
 
-![First week, even in time: traffic, p and spend rate](probabilistic-even-week.png)
+![First week, even in time, profile known and unknown: traffic, p and spend rate](probabilistic-even-week.png)
 

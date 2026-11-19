@@ -94,8 +94,13 @@ def probabilistic(n: int):
     # sample run for the chart: the first week
     c = ctl(scn, profile=prof)
     res = simulate(scn, c, 1, seed=22, keep=1, rate_profile=prof, center_profile=prof, target=tgt)
-    _fig_profile(scn, prof, res, OUT / "probabilistic-week.png")
-    md += ["![First week: traffic, p and spend rate](probabilistic-week.png)", ""]
+    res_u = simulate(scn, ctl(scn), 1, seed=22, keep=1, rate_profile=prof, target=tgt)
+    _fig_profile(scn, prof, [(res, "profile known", BLUE), (res_u, "profile unknown", ORANGE)],
+                 OUT / "probabilistic-week.png",
+                 p_title="Following the traffic: p stays almost constant",
+                 spend_title="Spend follows the traffic")
+    md += ["![First week, following the traffic, profile known and unknown: traffic, p and spend rate]"
+           "(probabilistic-week.png)", ""]
     md += even_section(scn, prof, wrong, n)
     return md
 
@@ -133,7 +138,7 @@ def even_section(scn, prof, wrong, n):
           "If a quiet hour cannot keep up even at p = 1, the shortfall raises the target rate for "
           "the rest of the campaign (catch-up). Deviation is measured against the even-in-time line. "
           f"All rows send p only when it changes by more than 2 %. {n} runs per row.", "", HEADER_EVEN]
-    sample = {}
+    sample = sample_u = None
     for name, sc, ckw, skw in rows:
         c = SeasonalController(sc.center_view(), prior_mean=sc.spend_rate_at_p1, eps=EPS,
                                broadcast_threshold=0.02, **ckw)
@@ -147,32 +152,39 @@ def even_section(scn, prof, wrong, n):
                   f"{pp.min():.4f}–{pp.max():.4f} | {(pp > 0.999).mean():.0%} | {c.broadcasts.mean() / hours:.1f} |")
         if name.startswith("even in time, profile known"):
             sample = res
+        if name.startswith("even in time, profile unknown, current rate from the last 10 min"):
+            sample_u = res
     md.append("")
-    _fig_profile(scn, prof, sample, OUT / "probabilistic-even-week.png",
-                 p_title="p is high in quiet hours and low in busy ones",
+    _fig_profile(scn, prof, [(sample, "profile known", BLUE),
+                             (sample_u, "profile unknown, rate from the last 10 min", ORANGE)],
+                 OUT / "probabilistic-even-week.png",
+                 p_title="Spending evenly: p is high in quiet hours and low in busy ones",
                  spend_title="Spend is (almost) flat")
-    md += ["![First week, even in time: traffic, p and spend rate](probabilistic-even-week.png)", ""]
+    md += ["![First week, even in time, profile known and unknown: traffic, p and spend rate]"
+           "(probabilistic-even-week.png)", ""]
     return md
 
 
-def _fig_profile(scn, prof, res, path, p_title="p stays almost constant: pacing follows the traffic",
-                 spend_title="Spend follows the traffic"):
+def _fig_profile(scn, prof, runs, path, p_title, spend_title):
+    """First week: the traffic, then p and the hourly spend for each (result, label, colour)."""
     week = int(7 * DAY / scn.step)
     t = np.arange(week) * scn.step / DAY
-    spend = np.diff(res.traj_spend[0][: week + 1]) / scn.step
-    p = res.traj_p[0][:week]
-    fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(10, 7.5), sharex=True)
     axes[0].plot(t, prof[:week], color=INK2, lw=1)
     axes[0].set(ylabel="traffic factor s(t)", title="Traffic profile: daily cycle, quieter weekend")
-    axes[1].plot(t, p, color=BLUE, lw=1)
+    for res, label, color in runs:
+        spend = np.diff(res.traj_spend[0][: week + 1]) / scn.step
+        hourly = spend.reshape(-1, 60).mean(axis=1)
+        axes[1].plot(t, res.traj_p[0][:week], color=color, lw=1, label=label)
+        axes[2].plot(np.arange(len(hourly)) * (60 * scn.step) / DAY, hourly, color=color, lw=1, label=label)
     axes[1].set(ylabel="broadcast p", title=p_title)
-    hourly = spend.reshape(-1, 60).mean(axis=1) if week % 60 == 0 else spend
-    axes[2].plot(np.arange(len(hourly)) * (60 * scn.step) / DAY, hourly, color=ORANGE, lw=1)
     axes[2].set(ylabel="spend, units/s (hourly mean)", xlabel="day of the campaign (Monday = 0)",
                 title=spend_title)
+    handles, labels = axes[1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=len(runs), fontsize=9, frameon=False)
     for ax in axes:
         ax.set_axisbelow(True)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
     fig.savefig(path, dpi=140)
     plt.close(fig)
 

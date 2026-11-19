@@ -74,7 +74,16 @@ still high (factor 1.42).
 | ends at 08:00 (low traffic), profile known | 1.0 % | 0.05 % | 17 units |
 | ends at 08:00, profile unknown | 0 | 0.53 % | 971 units |
 
-![First week: traffic, p and spend rate](../../results/seasonal/probabilistic-week.png)
+![First week, following the traffic, profile known and unknown: traffic, p and spend rate](../../results/seasonal/probabilistic-week.png)
+
+*The chart: the first week of one campaign, following the traffic, with the
+profile known (blue) and unknown (orange).* Top: the traffic. Middle: p. With
+the profile known, p is flat from the first hours. Without it, p starts too low
+and then overshoots to 0.021 on the first day: the campaign starts at midnight,
+when traffic is falling, so the first data underestimate the average. After
+that p swings around the right value by about ±7 %, a little less each day.
+Bottom: spend per hour. In both cases it follows the traffic; without the
+profile it differs visibly only on the first day.
 
 What the results show:
 
@@ -121,7 +130,20 @@ more than 2 %:
 | budget × 50, even in time, profile known | 0 | **4.78 %** | 0.40–1.00 | 2.7 |
 | budget × 50, follow the traffic, profile known | 1.2 % | 1.45 % | flat (0.69) | 0 |
 
-![First week, even in time: traffic, p and spend rate](../../results/seasonal/probabilistic-even-week.png)
+![First week, even in time, profile known and unknown: traffic, p and spend rate](../../results/seasonal/probabilistic-even-week.png)
+
+*The chart: the first week, spending evenly, with the profile known (blue) and
+unknown, the current rate estimated from the last 10 minutes (orange).* Middle:
+p mirrors the traffic, high in quiet hours and low in busy ones; without the
+profile it follows the same curve with a small lag. Bottom: spend per hour. With
+the profile known it stays flat within the hourly noise. Without it, it wobbles
+by about ±5 % in a daily pattern, because the rate estimate lags behind the
+traffic:
+
+- while traffic rises (late morning), the estimate is too low, so p is too
+  high and spend runs above the line;
+- while traffic falls (night), the estimate is too high, so spend runs below;
+- the sudden drop into the weekend (day 5) gives the deepest dip.
 
 1. **With the profile known, spending is almost perfectly even** (0.05 % from the
    even line), and ε holds. The price is a p that moves every hour, about 5
