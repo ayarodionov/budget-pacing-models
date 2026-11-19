@@ -113,6 +113,49 @@ The report goes to `results/scenarios/`. Which fields are required and how to
 measure them: the comments in the template and
 [models/system.md](models/system.md) §8.6.
 
+### Example: the minimal scenario
+
+[scenarios/minimal.toml](scenarios/minimal.toml) holds only the required fields:
+
+```toml
+[campaign]
+budget = 5000           # budget units
+length_hours = 1
+eps = 0.001             # allowed overspend probability (probabilistic model)
+
+[traffic]
+request_rate = 1000     # bid requests per second
+
+[spend]
+charged_share = 0.1     # share of bids that are charged
+delay_seconds = 30      # time until a charge shows in the budget
+
+[infrastructure]
+control_period_seconds = 5
+
+[center]
+prior_mean = 100        # rough guess: charged bids per second at p = 1
+```
+
+Run it (a few seconds):
+
+```bash
+uv run python -m pacing.scenario_file scenarios/minimal.toml
+```
+
+It runs all three models, 1,000 campaigns each, prints the table and writes it
+to [results/scenarios/minimal.md](results/scenarios/minimal.md):
+
+| model | P(overspend) | mean underspend | max deviation from even spending |
+|---|---|---|---|
+| probabilistic (ε = 0.001) | 0 | 0.52 % | 1.24 % |
+| token cap (a), failures reported at once | 0 | 0.27 % | 1.42 % |
+| token cap (b), grant share 0.5 | 0 | 3.64 % | 3.64 % |
+
+(The full table also has the 95 % upper bound of the overspend rate, the worst
+overspend and the 95th percentile of the underspend.) To try your own numbers,
+copy the file, change the values, and run the copy.
+
 ## Running
 
 ```bash
