@@ -15,6 +15,7 @@ versions:
 Code: `src/pacing/seasonal.py` · experiments: `src/pacing/seasonal_experiments.py`
 (`uv run python -m pacing.seasonal_experiments`, about 8 min) · tests:
 `tests/test_seasonal.py`.
+Simulation parameters, including the seasonal ones: [../system.md](../system.md) §8.
 
 ## 1. The traffic
 

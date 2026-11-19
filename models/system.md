@@ -663,3 +663,109 @@ Code: `Scenario.delay_dist` and `simulate(..., center_pmf=)` in Python;
 `delay_pmf:` in `PacingController` (Elixir). Measured in
 [probabilistic.md](probabilistic.md) §3, item 14, and in the token-cap results.
 
+## 8. Simulation parameters
+
+What has to be set to simulate each model, and what is optional. The columns
+**P**, **(a)** and **(b)** show which model uses a parameter: the probabilistic
+controller, token cap (a) and token cap (b). In the code, "required" means the
+call fails without it; "core" means it has a default but defines the scenario
+(the defaults are the example scenario of §1); "optional" means the default
+switches the feature off or keeps the base model.
+
+### 8.1 The world (`Scenario`, `src/pacing/model.py`)
+
+| Parameter | Symbol | Meaning | Default | Required? | P | (a) | (b) |
+|---|---|---|---|---|---|---|---|
+| `budget` | B | budget, in budget units | 5000 | core | ✓ | ✓ | ✓ |
+| `horizon` | T | campaign length, s | 3600 | core | ✓ | ✓ | ✓ |
+| `request_rate` | λ | bid requests per second (unknown to the center) | 1000 | core | ✓ | ✓ | ✓ |
+| `realization` | r | share of bids that are charged (unknown to the center) | 0.1 | core | ✓ | ✓ | ✓ |
+| `delay` | d | spend delay, s; with `delay_dist`, what the center assumes | 30 | core | ✓ | ✓ | ✓ (the grant window) |
+| `step` | Δ | control period, s | 5 | core | ✓ | ✓ | ✓ |
+| `unit_cost` | c | budget units per charged bid | 1 | optional | ✓ | ✓ | ✓ |
+| `message_delay` | δ | true delay before p (and grants) reach the clients, s | 0 | optional | ✓ | ✓ | ✓ (must be < Δ) |
+| `message_delay_max` | δ_max | the bound the center plans with, s | 0 | optional | ✓ | ✓ | ✓ (also the grant margin) |
+| `message_age_limit` | | clients ignore a p older than this, s | none (no check) | optional | ✓ | ✓ | ✓ |
+| `delay_dist` | F | random spend delay: `("exp", mean)`, `("uniform", lo, hi)`, `("lognormal", median, σ)` | none (fixed d) | optional | ✓ | ✓ | ✓ |
+
+### 8.2 The center's controller (`src/pacing/controllers.py`)
+
+The probabilistic model uses `BayesRiskController`. Under a token cap the
+simulations use plain pacing, `NaiveController` ("cap only"), or
+`BayesRiskController` for a cap with a risk check on top.
+
+| Parameter | Meaning | Default | Required? | P | (a) | (b) |
+|---|---|---|---|---|---|---|
+| `view` | what the center knows: `scn.center_view()` | — | **required** | ✓ | ✓ | ✓ |
+| `prior_mean` | rough guess of k = λ·r, used until spend is visible | — | **required** | ✓ | ✓ | ✓ |
+| `eps` | allowed overspend probability ε | — | **required** for `BayesRiskController` | ✓ | only with a risk check | only with a risk check |
+| `prior_shape` | weight of the guess, in spends | 2 | optional | ✓ | ✓ | ✓ |
+| `endgame_time` | finish the planned spend this long before T, s | 0 | optional | ✓ | ✓ | ✓ |
+| `flat_after_data` | drop the guess once spend is visible | true | optional | ✓ | ✓ | ✓ |
+| `max_rise`, `rise_period` | p may grow at most × `max_rise` per `rise_period` (default d) | none | optional | ✓ | ✓ | ✓ |
+| `eta`, `eta_period` | share of the unused risk budget per `eta_period` s | 0.5, 5 s | optional | ✓ | | |
+| `max_silence` | clients' silence limit L: charge each p for max(Δ, L) | none | optional | ✓ | | |
+| `broadcast_threshold` | send p only when it changes by more than this share | none (every period) | optional | ✓ | | |
+| `known_rate` | the true k (an oracle, for comparison only) | none | optional | ✓ | | |
+| `tails` | `"scipy"` or `"portable"` (the Elixir algorithms) | scipy | optional | ✓ | | |
+
+### 8.3 The run (`simulate` for P, `simulate_with_backstop` for (a) and (b))
+
+| Parameter | Meaning | Default | Required? | P | (a) | (b) |
+|---|---|---|---|---|---|---|
+| `scn`, `controller`, `n_runs` | the scenario, the controller, number of campaigns | — | **required** | ✓ | ✓ | ✓ |
+| `seed` | random seed | 0 | optional | ✓ | ✓ | ✓ |
+| `mode` | `"reports"` = (a), `"grants"` = (b) | reports | **required for (b)** | | ✓ | ✓ |
+| `failure_delay` | d_f: delay of failure reports, s | 0 | optional | | ✓ | |
+| `wallet`, `wallet_share` | tokens clients may hold; top-up share near the end | none (shared pool), 0.5 | optional | | ✓ | |
+| `grant_share` **or** `grant_headroom` | grant rule: share s of the free budget, or h × expected demand | — | **required for (b): exactly one** | | | ✓ |
+| `cap` | false = the same process without the cap | true | optional | | ✓ | ✓ |
+| `keep` | number of trajectories to store (for charts) | 0 | optional | ✓ | | |
+| `true_rates` | a different k for each run | none | optional | ✓ | | |
+| `center_pmf` | delay distribution the center weights its exposure with | none (fixed d) | optional | ✓ | | |
+| `halt_on_lag` | halt when the measured delivery delay exceeds δ_max + this, s | none | optional | ✓ | | |
+| `link_outage`, `silence_limit` | (t0, t1) without messages; clients' silence limit (default 3Δ + δ_max) | none | optional | ✓ | ✓ | ✓ |
+| `feed_outage`, `halt_on_stale_feed` | (t0, t1) with a frozen budget feed; halt tolerance, s | none | optional | ✓ | | |
+| `trace` | record one run, step by step (for the Elixir tests) | none | optional | | ✓ | ✓ |
+
+### 8.4 Traffic that varies (seasonal models, `src/pacing/seasonal.py`)
+
+All optional; without them traffic is constant. See
+[seasonal/system.md](seasonal/system.md).
+
+| Parameter | Where | Meaning | Default | P | (a) | (b) |
+|---|---|---|---|---|---|---|
+| `rate_profile` | run | the true traffic factor s of each step | none (s ≡ 1) | ✓ | ✓ | ✓ |
+| `center_profile` | run | the profile the center weights its exposure with | none | ✓ | ✓ | ✓ |
+| `target` | run | share of B to spend by each step, for the deviation measure | even in time | ✓ | ✓ | ✓ |
+| `profile` | controller | the center's profile (same array as `center_profile`) | none | ✓ | ✓ | ✓ |
+| `pace_goal` | controller | `"traffic"` (follow the traffic) or `"time"` (spend evenly) | traffic | ✓ | ✓ | ✓ |
+| `risk_half_life` / `half_life` | controller | memory of the recent-rate estimate, s | none (1 h with `"time"` and no profile) | ✓ | ✓ (pacing only) | ✓ (pacing only) |
+| `daily_amplitude`, `peak_hour`, `weekend`, `start_weekday` | profile | shape of s(t) | 0.6, 20 h, 0.7, Monday | ✓ | ✓ | ✓ |
+
+The seasonal experiments use `month_scenario()`: B = 3.6 million, T = 30 days,
+Δ = 60 s, d = 30 s.
+
+### 8.5 Minimal calls
+
+```python
+from pacing.model import Scenario, simulate
+from pacing.backstop import simulate_with_backstop
+from pacing.controllers import BayesRiskController, NaiveController
+
+scn = Scenario()                                   # the example scenario of §1
+
+# probabilistic controller: needs prior_mean and eps
+res = simulate(scn, BayesRiskController(scn.center_view(), prior_mean=100, eps=1e-3), n_runs=1000)
+
+# token cap (a): plain pacing under the cap
+res = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=100), 1000,
+                             failure_delay=5.0)
+
+# token cap (b): mode and exactly one grant rule are required
+res = simulate_with_backstop(scn, NaiveController(scn.center_view(), prior_mean=100), 1000,
+                             mode="grants", grant_share=0.5)
+
+print(res.summary(scn.budget))
+```
+
