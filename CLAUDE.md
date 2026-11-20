@@ -39,7 +39,8 @@ Without a C compiler, test pure Elixir only:
 | `src/pacing/` | Python: `model.py` (simulator), `controllers.py`, `backstop.py` (token caps), `seasonal.py`, `scenario_file.py`, `experiments.py`, `seasonal_experiments.py`, `overview.py`, `specfun.py` |
 | `elixir/` | the production-side port: `PacingController`, `TokenCap`, `PacingCenter`, `PacingClient`, math kernel and NIF; see `elixir/README.md` |
 | `scenarios/` | scenario files: `minimal.toml` (required fields only), `example.toml` (every field, commented) |
-| `scripts/` | generators of the Elixir golden tests from the Python reference |
+| `scripts/` | generators of the Elixir golden tests from the Python reference; `measure_logs.py` turns log exports into scenario fields |
+| `.claude/skills/create-scenario/` | the skill for writing a custom scenario file from the user's measurements or logs |
 | `tests/` | Python tests |
 
 Simulation parameters, required and optional: `models/system.md` §8.
@@ -53,6 +54,9 @@ uv run python -m pacing.overview               # README comparison chart, ~80 s
 uv run python -m pacing.seasonal_experiments   # seasonal models, ~8 min (--quick: ~1 min)
 uv run python -m pacing.scenario_file FILE     # a scenario file -> results/scenarios/
 ```
+
+To build a scenario for a user's own campaign, follow the `create-scenario` skill
+(`.claude/skills/create-scenario/SKILL.md`).
 
 Run long experiments in the background. A `--quick` run overwrites the results
 files with low-precision numbers: always finish with a full run before using or
