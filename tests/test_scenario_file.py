@@ -38,7 +38,13 @@ def test_example_file_loads_and_runs():
     results = {m: run_model(plan, m, runs=30) for m in plan.models}
     for model in ("token_cap_a", "token_cap_b"):
         assert not results[model][0].overspent.any()
-    assert "| probabilistic" in report(plan, results)
+    text = report(plan, results)
+    assert "| probabilistic" in text
+    # every column of the results table is explained
+    header = next(line for line in text.splitlines() if line.startswith("| model |"))
+    explained = text.split("What the columns mean")[1]
+    for column in [c.strip() for c in header.strip("|").split("|")]:
+        assert f"| {column} |" in explained, column
 
 
 def test_minimal_file(tmp_path):

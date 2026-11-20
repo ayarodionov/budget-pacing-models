@@ -346,8 +346,26 @@ def report(plan: Plan, results: dict) -> str:
                      f"{s['mean_underspend_pct'] * scn.budget / 100:.0f} | {s['mean_underspend_pct']:.3f} | "
                      f"{s['p95_underspend_pct']:.3f} | {s['mean_max_pace_dev_pct']:.2f} | "
                      f"{'–' if msgs is None else format(msgs, '.1f')} |")
-    lines += ["", "The target for the deviation is the traffic-following curve when the pacing goal is "
-              "\"traffic\" and a profile is given, otherwise even spending in time.", ""]
+    target = ("the traffic-following curve (the share of the campaign's traffic seen so far)"
+              if _target(plan) is not None else "even spending in time (a straight line from 0 to B)")
+    lines += ["", "**What the columns mean** (each value is over all simulated campaigns of that model):", "",
+              "| Column | Meaning |", "|---|---|",
+              "| model | the model simulated, with its main setting |",
+              "| P(overspend) | share of campaigns whose total spend exceeded the budget B. "
+              "For the probabilistic model it should be at most ε; for the token caps it should be 0 |",
+              "| 95% upper bound | the highest overspend probability still consistent with the runs "
+              "(Clopper–Pearson, 95 %). With few runs, a P(overspend) of 0 does not mean the true "
+              "probability is 0: this bound says how large it could be |",
+              "| worst overspend, units | the largest amount by which any campaign exceeded B, in budget units "
+              "(0 if none did) |",
+              "| mean underspend, units | budget left unspent at the end, averaged over the campaigns |",
+              "| mean underspend % | the same, as a percentage of B |",
+              "| p95 underspend % | 95 % of the campaigns left at most this percentage of B unspent |",
+              f"| max deviation from the target % | how far spending strayed from the target, as a percentage "
+              f"of B: the largest gap during the campaign, averaged over the campaigns. The target here is "
+              f"{target} |",
+              "| p messages per hour | how often the center sent a new p to the clients (probabilistic "
+              "model only; – for the caps, whose pacing is not counted) |", ""]
     return "\n".join(lines)
 
 

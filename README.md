@@ -152,9 +152,14 @@ to [results/scenarios/minimal.md](results/scenarios/minimal.md):
 | token cap (a), failures reported at once | 0 | 0.27 % | 1.42 % |
 | token cap (b), grant share 0.5 | 0 | 3.64 % | 3.64 % |
 
-(The full table also has the 95 % upper bound of the overspend rate, the worst
-overspend and the 95th percentile of the underspend.) To try your own numbers,
-copy the file, change the values, and run the copy.
+Columns: **P(overspend)** is the share of campaigns that exceeded the budget;
+**mean underspend** is the budget left unspent at the end, as a share of B;
+**max deviation from even spending** is the largest gap between the spend so far
+and a straight line from 0 to B, averaged over the campaigns. The full report
+also has the 95 % upper bound of the overspend rate, the worst overspend and the
+95th percentile of the underspend, and ends with a table explaining every
+column. To try your own numbers, copy the file, change the values, and run the
+copy.
 
 ## Running
 
