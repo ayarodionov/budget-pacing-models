@@ -159,6 +159,31 @@ def _clopper_pearson_upper(k: int, n: int, conf: float = 0.95) -> float:
     return float(beta.ppf(conf, k + 1, n - k))
 
 
+class RateNoise:
+    """Random fluctuations of the request rate beyond Poisson: bursts and lulls.
+
+    The rate is multiplied by a factor with mean 1 and coefficient of variation
+    ``cv`` that changes smoothly, with correlation time ``correlation_seconds``:
+    log-normal, driven by an AR(1) process, one value per run and step. Requests
+    are then a Cox (doubly stochastic) Poisson process: counts over a window are
+    more variable than Poisson, the more so the larger cv and the longer the
+    window compared with the correlation time.
+    """
+
+    def __init__(self, spec: tuple[float, float], step: float, n_runs: int, rng):
+        cv, tau = (float(v) for v in spec)
+        if cv < 0 or tau <= 0:
+            raise ValueError("rate_noise needs cv >= 0 and correlation_seconds > 0")
+        self.sigma = math.sqrt(math.log1p(cv * cv))
+        self.rho = math.exp(-step / tau)
+        self.rng = rng
+        self.z = rng.standard_normal(n_runs)  # start in the stationary state
+
+    def next(self) -> np.ndarray:
+        self.z = self.rho * self.z + math.sqrt(1 - self.rho ** 2) * self.rng.standard_normal(self.z.shape)
+        return np.exp(self.sigma * self.z - self.sigma ** 2 / 2)
+
+
 def simulate(
     scn: Scenario,
     controller: Controller,
@@ -175,6 +200,7 @@ def simulate(
     rate_profile: np.ndarray | None = None,
     center_profile: np.ndarray | None = None,
     target: np.ndarray | None = None,
+    rate_noise: tuple[float, float] | None = None,
 ) -> SimResult:
     """Run ``n_runs`` independent replications of one campaign in parallel.
 
@@ -208,6 +234,9 @@ def simulate(
     center believes it is: its exposure counts p * step * center_profile[i].
     ``target[i]`` is the share of the budget that should be spent by the end of
     step i (default: even in time); ``max_pace_deviation`` is measured against it.
+
+    ``rate_noise`` (cv, correlation_seconds): random fluctuations of the request
+    rate beyond Poisson, unknown to the center (see ``RateNoise``).
     """
     rng = np.random.default_rng(seed)
     k = (
@@ -240,6 +269,9 @@ def simulate(
     if (rate_profile is not None or center_profile is not None) and scn.message_delay:
         raise ValueError("traffic profiles are simulated without a delivery delay of p")
     cf = center_profile  # the center's belief about the traffic of each step
+    if rate_noise is not None and scn.message_delay:
+        raise ValueError("rate_noise is simulated without a delivery delay of p")
+    noise = RateNoise(rate_noise, dt, n_runs, rng) if rate_noise is not None else None
     # with both a delay distribution and a profile, the center splits each step's
     # exposure p * step * profile by the delay distribution
     ring_pc = np.zeros((n_runs, hist)) if (center_pmf is not None and cf is not None) else None
@@ -289,7 +321,10 @@ def simulate(
         if lo0 <= i < lo1:
             # cut off: the last received p runs until the silence limit, then p = 0
             p_clients = p_kept if (i - (lo0 - 1)) * dt < silence else np.zeros(n_runs)
-        if rate_profile is not None:
+        if noise is not None:
+            factor = noise.next() * (1.0 if rate_profile is None else rate_profile[i])
+            x = rng.poisson(k * p_clients * dt * factor)
+        elif rate_profile is not None:
             x = rng.poisson(k * p_clients * dt * rate_profile[i])
         elif scn.message_delay == 0:
             x = rng.poisson(k * p_clients * dt)

@@ -1,0 +1,25 @@
+# Stream pattern: trend. Traffic grows steadily by 50 % over the campaign.
+# The center knows the trend (e.g. from a forecast).
+#     uv run python -m pacing.scenario_file scenarios/streams/trend.toml
+
+[campaign]
+budget = 168_000
+length_days = 2
+eps = 0.01
+
+[spend]
+charged_share = 0.1
+delay_seconds = 30
+
+[infrastructure]
+control_period_seconds = 60
+
+[center]
+prior_mean = 100
+
+[traffic]
+request_rate = 1000
+
+[traffic.trend]
+start = 0.8
+end = 1.2

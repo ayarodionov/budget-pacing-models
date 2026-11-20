@@ -47,6 +47,7 @@ class Plan:
     center_profile: np.ndarray | None
     center_pmf: np.ndarray | None
     controller: dict = field(default_factory=dict)  # extra controller options
+    rate_noise: tuple[float, float] | None = None  # random fluctuations beyond Poisson
     sim: dict = field(default_factory=dict)  # extra simulate options (probabilistic)
     cap_sim: dict = field(default_factory=dict)  # extra simulate_with_backstop options
     failure_delay: float = 0.0
@@ -90,6 +91,7 @@ def _step_values(start: float, horizon: float, step: float, fn) -> np.ndarray:
 
 def _profile(spec: dict, start: float, horizon: float, step: float, where: str) -> np.ndarray | None:
     kind = str(spec.get("profile", "none")).lower()
+    kind = {"stable": "none", "periodic": "builtin"}.get(kind, kind)
     if kind == "none":
         return None
     if kind == "builtin":
@@ -98,7 +100,50 @@ def _profile(spec: dict, start: float, horizon: float, step: float, where: str) 
     if kind == "hourly":
         hw = _hour_of_week(_get(spec, "hourly", list, where=where))
         return _step_values(start, horizon, step, lambda t: hw[(np.floor(t / 3600).astype(int)) % 168])
-    raise ScenarioError(f'{where}profile must be "none", "builtin" or "hourly", got {kind!r}')
+    raise ScenarioError(f'{where}profile must be "stable", "periodic" ("builtin") or "hourly", got {kind!r}')
+
+
+def _shape(traffic: dict, start: float, horizon: float, step: float) -> np.ndarray | None:
+    """The deterministic traffic factor of each step: periodic × trend × steps (None = constant)."""
+    n = int(round(horizon / step))
+    t = (np.arange(n) + 0.5) * step  # seconds from the start of the campaign
+    factor = _profile(traffic, start, horizon, step, "traffic.")
+    parts = [] if factor is None else [factor]
+    if "trend" in traffic:
+        tr = traffic["trend"]
+        a, b = _get(tr, "start", where="traffic.trend."), _get(tr, "end", where="traffic.trend.")
+        if a <= 0 or b <= 0:
+            raise ScenarioError("traffic.trend start and end must be > 0")
+        parts.append(a + (b - a) * t / horizon)
+    if "steps" in traffic:
+        st = traffic["steps"]
+        at = [float(v) * 3600 for v in _get(st, "at_hours", list, where="traffic.steps.")]
+        fs = [float(v) for v in _get(st, "factor", list, where="traffic.steps.")]
+        if len(at) != len(fs) or not at:
+            raise ScenarioError("traffic.steps needs at_hours and factor of the same, non-zero length")
+        if any(b <= a for a, b in zip(at, at[1:])) or any(f < 0 for f in fs):
+            raise ScenarioError("traffic.steps: at_hours must increase and factors be >= 0")
+        level = np.ones(n)
+        for a, f in zip(at, fs):
+            level[t >= a] = f
+        parts.append(level)
+    if not parts:
+        return None
+    out = np.ones(n)
+    for part in parts:
+        out = out * part
+    return out
+
+
+def _fluctuations(traffic: dict) -> tuple[float, float] | None:
+    if "fluctuations" not in traffic:
+        return None
+    fl = traffic["fluctuations"]
+    cv = _get(fl, "cv", where="traffic.fluctuations.")
+    tau = _get(fl, "correlation_seconds", where="traffic.fluctuations.")
+    if cv < 0 or tau <= 0:
+        raise ScenarioError("traffic.fluctuations needs cv >= 0 and correlation_seconds > 0")
+    return cv, tau
 
 
 def _delay(spend: dict) -> tuple[float, tuple | None]:
@@ -173,9 +218,15 @@ def load(path: str | Path) -> Plan:
 
     # --- traffic
     request_rate = _get(traffic, "request_rate", where="traffic.")
-    rate_profile = _profile(traffic, start, horizon, step, "traffic.")
-    if rate_profile is not None and delta > 0:
-        raise ScenarioError("a traffic profile together with a delivery delay of p is not supported by the simulator")
+    rate_profile = _shape(traffic, start, horizon, step)
+    rate_noise = _fluctuations(traffic)
+    if (rate_profile is not None or rate_noise is not None) and delta > 0:
+        raise ScenarioError("a traffic profile, trend, steps or fluctuations together with a delivery delay "
+                            "of p is not supported by the simulator")
+    if rate_noise is not None and "probabilistic" in models:
+        notes.append(f"the traffic fluctuates beyond Poisson (cv {rate_noise[0]:g}, about "
+                     f"{rate_noise[1]:g} s): the probabilistic model's ε guarantee assumes Poisson traffic and "
+                     "may not hold (see models/system.md §3); the token caps are not affected")
 
     # --- spend
     r = _get(spend, "charged_share", where="spend.")
@@ -261,7 +312,8 @@ def load(path: str | Path) -> Plan:
 
     # --- feasibility
     k = request_rate * r
-    need = budget / unit_cost / (k * horizon)
+    mean_shape = 1.0 if rate_profile is None else float(rate_profile.mean())
+    need = budget / unit_cost / (k * horizon * mean_shape)
     if need > 1:
         notes.append(f"the budget cannot be spent even at p = 1 (it needs p ≈ {need:.2f} on average)")
     if pace_goal == "time" and rate_profile is not None:
@@ -273,7 +325,8 @@ def load(path: str | Path) -> Plan:
     return Plan(name=str(camp.get("name", path.stem)), scn=scn, models=models,
                 runs=int(_get(run, "runs", default=1000)), seed=int(_get(run, "seed", default=1)),
                 eps=eps, pace_goal=pace_goal, prior_mean=prior_mean, rate_profile=rate_profile,
-                center_profile=center_profile, center_pmf=center_pmf, controller=controller, sim=sim,
+                center_profile=center_profile, center_pmf=center_pmf, rate_noise=rate_noise,
+                controller=controller, sim=sim,
                 cap_sim=cap_sim, failure_delay=failure_delay, wallet=wallet, grant_share=grant_share,
                 cap_b_window=longest, notes=notes)
 
@@ -291,7 +344,8 @@ def run_model(plan: Plan, model: str, runs: int | None = None):
     """(result, broadcasts per hour or None) for one model."""
     n = runs or plan.runs
     scn = plan.scn
-    common = dict(rate_profile=plan.rate_profile, center_profile=plan.center_profile, target=_target(plan))
+    common = dict(rate_profile=plan.rate_profile, center_profile=plan.center_profile, target=_target(plan),
+                  rate_noise=plan.rate_noise)
     if model == "probabilistic":
         ctl = SeasonalController(scn.center_view(), prior_mean=plan.prior_mean, eps=plan.eps,
                                  profile=plan.center_profile, pace_goal=plan.pace_goal, **plan.controller)
@@ -313,6 +367,13 @@ def run_model(plan: Plan, model: str, runs: int | None = None):
     return res, None
 
 
+def _describe_stream(plan: Plan) -> str:
+    parts = ["stable" if plan.rate_profile is None else "varies (periodic, trend or steps)"]
+    if plan.rate_noise is not None:
+        parts.append(f"random fluctuations beyond Poisson (cv {plan.rate_noise[0]:g}, about {plan.rate_noise[1]:g} s)")
+    return ", ".join(parts)
+
+
 def report(plan: Plan, results: dict) -> str:
     scn = plan.scn
     lines = [f"# Scenario: {plan.name}", "",
@@ -323,7 +384,7 @@ def report(plan: Plan, results: dict) -> str:
              f"control period {scn.step:g} s, pacing goal: "
              f"{'follow the traffic' if plan.pace_goal == 'traffic' else 'even in time'}",
              f"- traffic: λ = {scn.request_rate:g} requests/s, charged share r = {scn.realization:g}, "
-             f"profile: {'none (constant)' if plan.rate_profile is None else 'varies'}; "
+             f"stream: {_describe_stream(plan)}; "
              f"the center's belief: {'none' if plan.center_profile is None else ('the true profile' if plan.center_profile is plan.rate_profile else 'a different profile')}",
              f"- spend delay: {'fixed ' + format(scn.delay, 'g') + ' s' if scn.delay_dist is None else 'measured distribution (longest ' + format(plan.cap_b_window, 'g') + ' s)'}; "
              f"the center {'weights by the distribution' if plan.center_pmf is not None else 'assumes ' + format(scn.delay, 'g') + ' s'}",

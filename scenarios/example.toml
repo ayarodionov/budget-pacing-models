@@ -17,16 +17,39 @@ unit_cost = 1.0                 # OPTIONAL, default 1. c: budget units per charg
 eps = 0.01                      # REQUIRED for the probabilistic model: allowed overspend probability
 pace_goal = "traffic"           # OPTIONAL, default "traffic": "traffic" (follow the traffic) or "time" (spend evenly)
 
+# The bid-request stream. Patterns combine: the rate is
+#     request_rate × periodic profile × trend × steps × random fluctuations
+# Each part is OPTIONAL; with none of them the stream is stable (constant Poisson).
+# The center can know the first three (from history or plans); fluctuations are random.
 [traffic]
-request_rate = 1000             # REQUIRED. λ: bid requests per second, averaged over a week
-profile = "builtin"             # OPTIONAL, default "none" (constant traffic):
-                                #   "builtin": a daily cosine and quieter weekends (the three fields below)
+request_rate = 1000             # REQUIRED. λ: bid requests per second (with a periodic profile: its weekly average)
+profile = "periodic"            # OPTIONAL, default "stable" (no daily or weekly cycle):
+                                #   "periodic" (or "builtin"): a daily cosine and quieter weekends (fields below)
                                 #   "hourly":  your measurements, 168 values in `hourly`
 daily_amplitude = 0.6           # OPTIONAL, builtin only, default 0.6: busiest hour = 1 + amplitude
 peak_hour = 20                  # OPTIONAL, builtin only, default 20: busiest hour of the day
 weekend = 0.7                   # OPTIONAL, builtin only, default 0.7: weekend traffic relative to weekdays
 # hourly = [ ... ]              # REQUIRED if profile = "hourly": requests per hour for each hour of the
                                 # week, Monday 00:00-01:00 first, 168 values. Any scale; it is normalised.
+
+# OPTIONAL: a steady trend over the campaign, as a factor at the start and at the end
+# [traffic.trend]
+# start = 1.0
+# end = 1.3                     # 30 % more traffic at the end than at the start
+
+# OPTIONAL: sudden lasting changes (a partner joins or leaves, a promotion starts):
+# from each time on, the rate is multiplied by the factor
+# [traffic.steps]
+# at_hours = [48, 96]           # hours from the start
+# factor = [1.5, 0.8]           # ×1.5 from hour 48, ×0.8 from hour 96
+
+# OPTIONAL: random fluctuations beyond Poisson (bursts and lulls), unknown to the center.
+# Measure them from logs: the ratio of the standard deviation to the mean of the
+# per-minute request rate, after removing the profile (cv), and how long a burst lasts.
+# Warning: the probabilistic model's ε guarantee assumes Poisson traffic.
+# [traffic.fluctuations]
+# cv = 0.3                      # typical size: ±30 %
+# correlation_seconds = 60      # typical duration of a burst or lull
 
 [spend]
 charged_share = 0.1             # REQUIRED. r: charged bids / bids made
@@ -53,8 +76,8 @@ delivery_delay_seconds = 0      # OPTIONAL, default 0. δ: time for a new p to r
 [center]
 prior_mean = 100                # REQUIRED. Rough guess of the spend rate at p = 1 (charged bids/s),
                                 # e.g. from the last campaign. Used only until spend shows up.
-profile_belief = "true"         # OPTIONAL, default "true" if a traffic profile is given, else "none":
-                                #   "true"   the center knows the traffic profile (from history)
+profile_belief = "true"         # OPTIONAL, default "true" if a profile, trend or steps are given, else "none":
+                                #   "true"   the center knows them (periodic profile, trend and steps)
                                 #   "none"   it assumes constant traffic
                                 #   "hourly" it believes a different profile: give `hourly_belief` (168 values)
 delay_belief = "true"           # OPTIONAL, only with delay_percentiles, default "true": the center weights

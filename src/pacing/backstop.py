@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 from .controllers import BayesRiskController, NaiveController
-from .model import Controller, Scenario, SimResult, delay_pmf
+from .model import Controller, RateNoise, Scenario, SimResult, delay_pmf
 
 
 @dataclass
@@ -60,6 +60,7 @@ def simulate_with_backstop(
     rate_profile: np.ndarray | None = None,
     center_profile: np.ndarray | None = None,
     target: np.ndarray | None = None,
+    rate_noise: tuple[float, float] | None = None,
 ) -> BackstopResult:
     """Token-level simulation. ``cap=False`` gives the same process without the backstop.
 
@@ -84,8 +85,8 @@ def simulate_with_backstop(
     they already hold. (b): no grant arrives, so no bids; after t1 the next grant
     replaces any old one, so a clean reconnect cannot spill.
 
-    ``rate_profile``, ``center_profile``, ``target``: traffic that varies, as in
-    ``pacing.model.simulate``.
+    ``rate_profile``, ``center_profile``, ``target``, ``rate_noise``: traffic that
+    varies, as in ``pacing.model.simulate``.
 
     ``wallet`` (version (a)): clients hold up to this many tokens in total, handed
     out ahead of use and counted as used when handed out; each top-up gives at most
@@ -130,6 +131,9 @@ def simulate_with_backstop(
     if (rate_profile is not None or center_profile is not None) and not instant:
         raise ValueError("traffic profiles are simulated with immediate delivery only")
     cf = center_profile
+    if rate_noise is not None and not instant:
+        raise ValueError("rate_noise is simulated with immediate delivery only")
+    noise = RateNoise(rate_noise, dt, n_runs, rng) if rate_noise is not None else None
     lo0, lo1 = (math.ceil(t / dt - 1e-9) for t in link_outage) if link_outage else (math.inf, math.inf)
     silence = silence_limit if silence_limit is not None else 3 * dt + scn.message_delay_max
     p_kept = np.zeros(n_runs)
@@ -166,7 +170,12 @@ def simulate_with_backstop(
         if cut:
             # the last received p runs until the silence limit, then p = 0
             p_clients = p_kept if (i - (lo0 - 1)) * dt < silence else np.zeros(n_runs)
-        if instant and rate_profile is not None:
+        if instant and noise is not None:
+            factor = noise.next() * (1.0 if rate_profile is None else rate_profile[i])
+
+            def bids(lo, hi):  # noqa: E306  traffic with random fluctuations
+                return rng.poisson(lam * p_clients * dt * factor)
+        elif instant and rate_profile is not None:
             def bids(lo, hi):  # noqa: E306  traffic that varies
                 return rng.poisson(lam * p_clients * dt * rate_profile[i])
         elif instant:

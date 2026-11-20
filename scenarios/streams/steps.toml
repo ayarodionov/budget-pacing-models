@@ -1,0 +1,29 @@
+# Stream pattern: steps. A partner joins after 12 h (traffic ×1.5) and leaves after 36 h (×0.8).
+# The center does NOT know about it in advance (profile_belief = "none"): it sees it only
+# through the spend, so it estimates the current rate from the last hour.
+#     uv run python -m pacing.scenario_file scenarios/streams/steps.toml
+
+[campaign]
+budget = 168_000
+length_days = 2
+eps = 0.01
+
+[spend]
+charged_share = 0.1
+delay_seconds = 30
+
+[infrastructure]
+control_period_seconds = 60
+
+[center]
+prior_mean = 100
+
+profile_belief = "none"
+recent_memory_seconds = 3600
+
+[traffic]
+request_rate = 1000
+
+[traffic.steps]
+at_hours = [12, 36]
+factor = [1.5, 0.8]

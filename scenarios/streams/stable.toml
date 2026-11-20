@@ -1,0 +1,20 @@
+# Stream pattern: stable. Constant Poisson traffic, as in the base models.
+#     uv run python -m pacing.scenario_file scenarios/streams/stable.toml
+
+[campaign]
+budget = 168_000
+length_days = 2
+eps = 0.01
+
+[spend]
+charged_share = 0.1
+delay_seconds = 30
+
+[infrastructure]
+control_period_seconds = 60
+
+[center]
+prior_mean = 100
+
+[traffic]
+request_rate = 1000

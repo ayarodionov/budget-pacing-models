@@ -107,3 +107,42 @@ def test_minimal_file_has_only_required_fields_and_runs():
     assert plan.rate_profile is None and plan.center_pmf is None and plan.runs == 1000
     res, _ = run_model(plan, "probabilistic", runs=30)
     assert res.final_spend.mean() > 0.95 * plan.scn.budget
+
+
+def test_stream_patterns_combine(tmp_path):
+    text = MINIMAL.replace("request_rate = 1000", """request_rate = 1000
+profile = "periodic"
+[traffic.trend]
+start = 1.0
+end = 2.0
+[traffic.steps]
+at_hours = [3]
+factor = [0.5]
+[traffic.fluctuations]
+cv = 0.3
+correlation_seconds = 60""")
+    plan = load(write(tmp_path, text))
+    n = len(plan.rate_profile)
+    # after 3 h the steps halve the rate; the trend doubles it over 6 h
+    assert plan.rate_profile[n // 2 + 1] < plan.rate_profile[n // 2 - 1]
+    assert plan.rate_noise == (0.3, 60.0)
+    assert any("Poisson" in note for note in plan.notes)
+    res, _ = run_model(plan, "token_cap_a", runs=20)
+    assert not res.overspent.any()
+
+
+@pytest.mark.parametrize("block, message", [
+    ("[traffic.trend]\nstart = 1.0", "traffic.trend.end"),
+    ("[traffic.steps]\nat_hours = [1, 2]\nfactor = [1.5]", "same, non-zero length"),
+    ("[traffic.fluctuations]\ncv = 0.3\ncorrelation_seconds = 0", "correlation_seconds > 0"),
+])
+def test_bad_stream_patterns_are_refused(tmp_path, block, message):
+    with pytest.raises(ScenarioError, match=message):
+        load(write(tmp_path, MINIMAL.replace("request_rate = 1000", "request_rate = 1000\n" + block)))
+
+
+@pytest.mark.parametrize("name", ["stable", "periodic", "trend", "steps", "bursty"])
+def test_stream_example_files_load(name):
+    plan = load(f"scenarios/streams/{name}.toml")
+    assert (plan.rate_profile is None) == (name in ("stable", "bursty"))
+    assert (plan.rate_noise is not None) == (name == "bursty")

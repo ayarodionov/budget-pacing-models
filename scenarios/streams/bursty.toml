@@ -1,0 +1,26 @@
+# Stream pattern: bursty. Random bursts and lulls of about ±30 %, lasting about a minute,
+# on top of the average rate. More variable than Poisson: the probabilistic model's
+# guarantee assumes Poisson traffic and does not hold here; the token caps are not affected.
+#     uv run python -m pacing.scenario_file scenarios/streams/bursty.toml
+
+[campaign]
+budget = 168_000
+length_days = 2
+eps = 0.01
+
+[spend]
+charged_share = 0.1
+delay_seconds = 30
+
+[infrastructure]
+control_period_seconds = 60
+
+[center]
+prior_mean = 100
+
+[traffic]
+request_rate = 1000
+
+[traffic.fluctuations]
+cv = 0.3
+correlation_seconds = 60

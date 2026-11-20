@@ -191,3 +191,11 @@ def test_cap_b_needs_its_window_to_cover_the_longest_delay():
     max_window = replace(mean_window, delay=50.0)
     res = simulate_with_backstop(max_window, _FixedP(0.5), 1000, seed=6, mode="grants", grant_share=0.5)
     assert res.final_spend.max() <= max_window.budget
+
+
+@pytest.mark.parametrize("mode", ["reports", "grants"])
+def test_caps_never_overspend_with_bursty_traffic(mode):
+    kw = {"failure_delay": 5.0} if mode == "reports" else {"mode": "grants", "grant_share": 0.5}
+    scn = replace(SMALL, realization=1.0, request_rate=10.0)
+    res = simulate_with_backstop(scn, _FullThrottle(), 1000, seed=4, rate_noise=(0.6, 30.0), **kw)
+    assert res.final_spend.max() <= scn.budget

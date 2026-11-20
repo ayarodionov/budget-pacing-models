@@ -198,11 +198,33 @@ counts with variance F × mean, where F > 1. The controller would then
 underestimate the uncertainty in the in-flight spend: the reserve should be
 about √F times larger, and the real overspend probability would be above ε.
 
-Possible remedies, not implemented:
+**Measured.** The simulator can now add such fluctuations (`rate_noise`: a
+random traffic factor with mean 1, size cv and a correlation time; in scenario
+files, `[traffic.fluctuations]`). The default scenario, ε = 10⁻³, 20,000 runs:
+
+| Fluctuations (size cv, duration) | Overspend rate | Mean underspend |
+|---|---|---|
+| none (Poisson) | 0.9·10⁻³ | 0.40 % |
+| ±30 %, about 1 min | **7.6·10⁻²** (76 × ε) | 0.44 % |
+| ±30 %, about 10 min | **3.7·10⁻²** | 0.54 % |
+| ±60 %, about 1 min | **2.1·10⁻¹** | 0.54 % |
+| ±60 %, about 10 min | **1.2·10⁻¹** | 0.87 % |
+
+The guarantee breaks badly. Bursts lasting about as long as the spend delay hurt
+most: they swell the spend in flight, which the risk check sizes for Poisson.
+A short-memory estimate of k helps only against slow fluctuations (±30 % over
+10 min: 3.7 % → 1.4 % with a 2-minute memory), not against minute-long bursts.
+**The token caps are not affected:** no overspend even at p = 1 with ±60 %
+bursts. So if your traffic is burstier than Poisson, measure it (scenario file,
+`[traffic.fluctuations]`) before relying on ε, or use a cap.
+
+Possible remedies for the probabilistic model, not implemented:
 - A negative-binomial count model with F estimated from the spend observed in
-  each period.
-- A time-varying rate λ(t) for daily cycles.
+  each period, widening the reserve by about √F.
 - A Hawkes process if bursts trigger further bursts.
+
+(A time-varying rate for daily and weekly cycles is implemented: the seasonal
+models, [seasonal/system.md](seasonal/system.md).)
 
 ## 4. Are tokens needed?
 
@@ -743,6 +765,7 @@ simulations use plain pacing, `NaiveController` ("cap only"), or
 | `link_outage`, `silence_limit` | (t0, t1) without messages; clients' silence limit (default 3Δ + δ_max) | none | optional | ✓ | ✓ | ✓ |
 | `feed_outage`, `halt_on_stale_feed` | (t0, t1) with a frozen budget feed; halt tolerance, s | none | optional | ✓ | | |
 | `trace` | record one run, step by step (for the Elixir tests) | none | optional | | ✓ | ✓ |
+| `rate_noise` | random fluctuations of the request rate beyond Poisson: (cv, correlation seconds) | none (Poisson) | optional | ✓ | ✓ | ✓ |
 
 ### 8.4 Traffic that varies (seasonal models, `src/pacing/seasonal.py`)
 
@@ -817,6 +840,23 @@ profile together with a delivery delay of p; token cap (b) with a delivery
 delay of a whole period). Where it has to simplify, it says so in the report:
 for example, token cap (b) uses the longest measured delay as its window, and a
 center that cannot weight by the delay distribution assumes the longest delay.
+
+**The bid-request stream.** The `[traffic]` section emulates the stream as a
+product of optional parts; with none of them it is stable (constant Poisson).
+Each part has a ready example in [scenarios/streams/](../scenarios/streams/):
+
+| Pattern | Emulates | Fields | Known to the center? | Example |
+|---|---|---|---|---|
+| stable | constant Poisson traffic | `request_rate` only | — | `stable.toml` |
+| periodic | daily and weekly cycles | `profile = "periodic"` (built-in shape) or `"hourly"` (168 measured values) | yes, from history (`profile_belief`) | `periodic.toml` |
+| trend | steady growth or decline | `[traffic.trend]` start, end | yes, if forecast | `trend.toml` |
+| steps | sudden lasting changes | `[traffic.steps]` at_hours, factor | yes, if planned; `steps.toml` shows a center that does not know | `steps.toml` |
+| fluctuations | random bursts and lulls beyond Poisson | `[traffic.fluctuations]` cv, correlation_seconds | no, random | `bursty.toml` |
+
+The rate is request_rate × periodic × trend × steps × fluctuations. With
+`profile_belief = "true"` (the default when a profile, trend or steps are
+given) the center knows the first three. Fluctuations break the probabilistic
+model's Poisson assumption (§3); the report then carries a warning.
 
 **Choosing the models.** In the `[models]` section, `run` lists the models to
 simulate; leave it out to run all three:

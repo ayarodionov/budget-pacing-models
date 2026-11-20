@@ -378,3 +378,30 @@ def test_random_delay_breaks_eps_unless_the_center_weights_by_it():
                         center_pmf=delay_pmf(("exp", 30.0), 5.0))
     assert mean_only.overspent.mean() > 2 * eps
     assert weighted.overspent.mean() <= 1.5 * eps
+
+
+# --------------------------------------------------------------------------- fluctuations beyond Poisson
+class _FixedP:
+    def __init__(self, p):
+        self.p = p
+
+    def reset(self, n):
+        pass
+
+    def decide(self, t, spend, exposure, inflight):
+        return np.full(spend.shape, self.p)
+
+
+def test_rate_noise_keeps_the_mean_and_adds_variance():
+    plain = simulate(DEFAULT, _FixedP(0.0139), 3000, seed=1)
+    noisy = simulate(DEFAULT, _FixedP(0.0139), 3000, seed=1, rate_noise=(0.3, 600.0))
+    assert abs(noisy.final_spend.mean() / plain.final_spend.mean() - 1) < 0.02
+    assert noisy.final_spend.var() > 20 * plain.final_spend.var()
+
+
+def test_rate_noise_breaks_the_poisson_guarantee():
+    """The risk check assumes Poisson traffic; minute-long bursts make it reserve too little."""
+    eps = 0.01
+    res = simulate(DEFAULT, BayesRiskController(DEFAULT.center_view(), prior_mean=100.0, eps=eps), 2000, seed=2,
+                   rate_noise=(0.6, 60.0))
+    assert res.overspent.mean() > 3 * eps
