@@ -55,6 +55,7 @@ class Plan:
     grant_share: float = 0.5
     cap_b_window: float = 0.0
     notes: list[str] = field(default_factory=list)  # warnings and fallbacks, for the report
+    charts: bool = False  # also draw results/scenarios/<name>.png
 
 
 # ------------------------------------------------------------------ reading
@@ -324,6 +325,7 @@ def load(path: str | Path) -> Plan:
 
     return Plan(name=str(camp.get("name", path.stem)), scn=scn, models=models,
                 runs=int(_get(run, "runs", default=1000)), seed=int(_get(run, "seed", default=1)),
+                charts=bool(run.get("charts", False)),
                 eps=eps, pace_goal=pace_goal, prior_mean=prior_mean, rate_profile=rate_profile,
                 center_profile=center_profile, center_pmf=center_pmf, rate_noise=rate_noise,
                 controller=controller, sim=sim,
@@ -349,7 +351,7 @@ def run_model(plan: Plan, model: str, runs: int | None = None):
     if model == "probabilistic":
         ctl = SeasonalController(scn.center_view(), prior_mean=plan.prior_mean, eps=plan.eps,
                                  profile=plan.center_profile, pace_goal=plan.pace_goal, **plan.controller)
-        res = simulate(scn, ctl, n, seed=plan.seed, center_pmf=plan.center_pmf, **common, **plan.sim)
+        res = simulate(scn, ctl, n, seed=plan.seed, center_pmf=plan.center_pmf, keep=1, **common, **plan.sim)
         return res, ctl.broadcasts.mean() / (scn.horizon / 3600)
     # under a cap: plain pacing, no risk check
     pacer_kw = {k: v for k, v in plan.controller.items() if k in ("endgame_time", "max_rise")}
@@ -360,10 +362,10 @@ def run_model(plan: Plan, model: str, runs: int | None = None):
                           pace_goal=plan.pace_goal, half_life=half_life, **pacer_kw)
     if model == "token_cap_a":
         res = simulate_with_backstop(scn, pacer, n, failure_delay=plan.failure_delay, seed=plan.seed,
-                                     wallet=plan.wallet, **common, **plan.cap_sim)
+                                     wallet=plan.wallet, keep=1, **common, **plan.cap_sim)
     else:
         res = simulate_with_backstop(scn, pacer, n, seed=plan.seed, mode="grants",
-                                     grant_share=plan.grant_share, **common, **plan.cap_sim)
+                                     grant_share=plan.grant_share, keep=1, **common, **plan.cap_sim)
     return res, None
 
 
@@ -374,7 +376,83 @@ def _describe_stream(plan: Plan) -> str:
     return ", ".join(parts)
 
 
-def report(plan: Plan, results: dict) -> str:
+MODEL_COLORS = {"probabilistic": "#2a78d6", "token_cap_a": "#eb6834", "token_cap_b": "#1baf7a"}
+MODEL_LABELS = {"probabilistic": "probabilistic", "token_cap_a": "token cap (a)", "token_cap_b": "token cap (b)"}
+MODEL_STYLES = {"probabilistic": "-", "token_cap_a": "--", "token_cap_b": ":"}
+
+
+def chart(plan: Plan, results: dict, path: Path) -> None:
+    """Four panels: the traffic, one campaign per model, final spend over all campaigns, overspend."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    from .experiments import INK, INK2, plt  # also applies the project's chart style
+    from .model import RateNoise
+
+    scn = plan.scn
+    n, budget = scn.n_steps, scn.budget
+    unit, div = ("days", DAY) if scn.horizon >= 2 * DAY else ("hours", 3600.0)
+    t = (np.arange(n) + 0.5) * scn.step / div
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8.5))
+    ax_t, ax_r, ax_f, ax_o = axes.ravel()
+
+    # 1. the bid-request stream
+    base = np.ones(n) if plan.rate_profile is None else plan.rate_profile
+    if plan.rate_noise is not None:
+        noise = RateNoise(plan.rate_noise, scn.step, 1, np.random.default_rng(0))
+        sample = base * np.array([noise.next()[0] for _ in range(n)])
+        ax_t.plot(t, sample, color=INK2, lw=0.6, alpha=0.6, label="one random sample")
+    ax_t.plot(t, base, color=INK, lw=1.4, label="average pattern")
+    ax_t.set(title="Bid-request stream", xlabel=f"time, {unit}", ylabel="rate, × the average")
+    ax_t.set_ylim(bottom=0)
+    ax_t.legend(fontsize=8)
+
+    # 2. one campaign per model, against the target
+    target = _target(plan)
+    target = (np.arange(1, n + 1) / n) if target is None else target
+    target = np.concatenate([[0.0], target])
+    tt = np.arange(n + 1) * scn.step / div
+    for model, (res, _) in results.items():
+        ax_r.plot(tt, 100 * (res.traj_spend[0] / budget - target), color=MODEL_COLORS[model], lw=1.3,
+                  ls=MODEL_STYLES[model], label=MODEL_LABELS[model])
+    ax_r.axhline(0, color=INK, lw=0.8)
+    goal = "the traffic" if _target(plan) is not None else "even spending"
+    ax_r.set(title=f"One campaign per model (target: {goal})", xlabel=f"time, {unit}",
+             ylabel="ahead (+) or behind (−), % of B")
+    ax_r.legend(fontsize=8)
+
+    # 3. final spend over all campaigns
+    for model, (res, _) in results.items():
+        d = 100 * (res.final_spend - budget) / budget
+        ax_f.hist(d, bins=40, histtype="step", lw=1.5, color=MODEL_COLORS[model], label=MODEL_LABELS[model])
+    ax_f.axvline(0, color=INK, lw=0.8)
+    ax_f.set(title=f"Final spend, all {plan.runs} campaigns", xlabel="final spend − B, % of B "
+             "(right of 0: overspend)", ylabel="campaigns")
+    ax_f.legend(fontsize=8)
+
+    # 4. overspend rate against ε
+    models = list(results)
+    rates = [100 * results[m][0].overspent.mean() for m in models]
+    x = np.arange(len(models))
+    bars = ax_o.bar(x, rates, 0.6, color=[MODEL_COLORS[m] for m in models])
+    ax_o.bar_label(bars, labels=[f"{r:.2f} %" if r else "0" for r in rates], fontsize=8, color=INK2, padding=2)
+    if plan.eps is not None and "probabilistic" in models:
+        ax_o.axhline(100 * plan.eps, color=INK2, ls="--", lw=1, label=f"ε = {plan.eps:g}")
+        ax_o.legend(fontsize=8)
+    ax_o.set_xticks(x, [MODEL_LABELS[m] for m in models])
+    top = max(rates + [100 * (plan.eps or 0)])
+    ax_o.set(title="Campaigns that overspent", ylabel="% of campaigns", ylim=(0, top * 1.4 or 1))
+    ax_o.grid(axis="x", visible=False)
+
+    for ax in axes.ravel():
+        ax.set_axisbelow(True)
+    fig.suptitle(f"Scenario: {plan.name}", x=0.01, ha="left")
+    fig.tight_layout()
+    fig.savefig(path, dpi=140)
+    plt.close(fig)
+
+
+def report(plan: Plan, results: dict, chart_file: str | None = None) -> str:
     scn = plan.scn
     lines = [f"# Scenario: {plan.name}", "",
              "Generated by `uv run python -m pacing.scenario_file`. "
@@ -409,6 +487,15 @@ def report(plan: Plan, results: dict) -> str:
                      f"{'–' if msgs is None else format(msgs, '.1f')} |")
     target = ("the traffic-following curve (the share of the campaign's traffic seen so far)"
               if _target(plan) is not None else "even spending in time (a straight line from 0 to B)")
+    if chart_file:
+        lines += ["", f"![Scenario charts: traffic, one campaign per model, final spend, overspend]({chart_file})",
+                  "", "*The charts:* top left, the bid-request stream (the average pattern, and one random sample if "
+                  "the traffic fluctuates). Top right, one simulated campaign per model: how far its spend so far is "
+                  "ahead of (+) or behind (−) the target, in % of B; the two token caps use the same pacing and the "
+                  "same random traffic, so their lines coincide until a cap binds near the end. Bottom left, the "
+                  "final spend of every simulated "
+                  "campaign minus B: right of 0 is overspend, left of 0 underspend. Bottom right, the share of "
+                  "campaigns that overspent, against ε."]
     lines += ["", "**What the columns mean** (each value is over all simulated campaigns of that model):", "",
               "| Column | Meaning |", "|---|---|",
               "| model | the model simulated, with its main setting |",
@@ -435,6 +522,7 @@ def main() -> None:
     ap.add_argument("file")
     ap.add_argument("--runs", type=int, help="override run.runs")
     ap.add_argument("--out", default="results/scenarios")
+    ap.add_argument("--charts", action="store_true", help="also draw <out>/<name>.png (or set run.charts = true)")
     args = ap.parse_args()
     try:
         plan = load(args.file)
@@ -443,12 +531,16 @@ def main() -> None:
     if args.runs:
         plan.runs = args.runs
     results = {m: run_model(plan, m) for m in plan.models}
-    text = report(plan, results)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    chart_file = None
+    if args.charts or plan.charts:
+        chart_file = f"{plan.name}.png"
+        chart(plan, results, out / chart_file)
+    text = report(plan, results, chart_file)
     (out / f"{plan.name}.md").write_text(text)
     print(text)
-    print(f"written to {out / (plan.name + '.md')}")
+    print(f"written to {out / (plan.name + '.md')}" + (f" and {out / chart_file}" if chart_file else ""))
 
 
 if __name__ == "__main__":

@@ -858,6 +858,13 @@ The rate is request_rate × periodic × trend × steps × fluctuations. With
 given) the center knows the first three. Fluctuations break the probabilistic
 model's Poisson assumption (§3); the report then carries a warning.
 
+**Charts.** Add `--charts`, or set `charts = true` in `[run]`, to also draw
+`results/scenarios/<name>.png`, linked from the report. It has four panels:
+the bid-request stream (with one random sample if it fluctuates); one simulated
+campaign per model, as spend ahead of or behind the target; the final spend of
+every campaign minus B, where the right of 0 is overspend; and the share of
+campaigns that overspent, against ε.
+
 **Choosing the models.** In the `[models]` section, `run` lists the models to
 simulate; leave it out to run all three:
 

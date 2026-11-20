@@ -146,3 +146,20 @@ def test_stream_example_files_load(name):
     plan = load(f"scenarios/streams/{name}.toml")
     assert (plan.rate_profile is None) == (name in ("stable", "bursty"))
     assert (plan.rate_noise is not None) == (name == "bursty")
+
+
+def test_charts_are_drawn_and_linked(tmp_path):
+    from pacing.scenario_file import chart
+
+    text = MINIMAL.replace("request_rate = 1000", "request_rate = 1000\n[traffic.fluctuations]\ncv = 0.3\n"
+                                                   "correlation_seconds = 60").replace("runs = 50", "runs = 20\ncharts = true")
+    plan = load(write(tmp_path, text))
+    assert plan.charts
+    results = {m: run_model(plan, m) for m in plan.models}
+    for res, _ in results.values():
+        assert res.traj_spend.shape == (1, plan.scn.n_steps + 1)
+        assert np.isclose(res.traj_spend[0, -1], res.final_spend[0])
+    chart(plan, results, tmp_path / "s.png")
+    assert (tmp_path / "s.png").stat().st_size > 10_000
+    assert "![Scenario charts" in report(plan, results, "s.png")
+    assert "![" not in report(plan, results)

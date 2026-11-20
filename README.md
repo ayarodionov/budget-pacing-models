@@ -109,13 +109,19 @@ run
 uv run python -m pacing.scenario_file scenarios/my-campaign.toml
 ```
 
-The report goes to `results/scenarios/`. Which fields are required and how to
+The report goes to `results/scenarios/`; add `--charts` for a figure as well
+(the traffic, one campaign per model, final spend, overspend rate). Which fields are required and how to
 measure them: the comments in the template and
 [models/system.md](models/system.md) §8.6.
 
 The bid-request stream can be stable, periodic (daily and weekly cycles), have
 a trend or sudden steps, and fluctuate randomly beyond Poisson; the patterns
-combine. [scenarios/streams/](scenarios/streams/) has a small example of each:
+combine. To get the numbers from your logs, `scripts/measure_logs.py` turns
+per-minute request counts and bid/charge times into the request rate, the
+168-value hourly profile, the fluctuations and the delay percentiles, as a block
+to paste into the file. With Claude Code, the `create-scenario` skill
+(`.claude/skills/create-scenario/`) walks through the whole process.
+[scenarios/streams/](scenarios/streams/) has a small example of each:
 `stable.toml`, `periodic.toml`, `trend.toml`, `steps.toml`, `bursty.toml`. Note:
 bursty traffic breaks the probabilistic model's guarantee (up to 76 × ε in the
 measurements); the token caps stay safe.

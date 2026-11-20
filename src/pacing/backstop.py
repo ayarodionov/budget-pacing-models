@@ -61,6 +61,7 @@ def simulate_with_backstop(
     center_profile: np.ndarray | None = None,
     target: np.ndarray | None = None,
     rate_noise: tuple[float, float] | None = None,
+    keep: int = 0,
 ) -> BackstopResult:
     """Token-level simulation. ``cap=False`` gives the same process without the backstop.
 
@@ -86,7 +87,8 @@ def simulate_with_backstop(
     replaces any old one, so a clean reconnect cannot spill.
 
     ``rate_profile``, ``center_profile``, ``target``, ``rate_noise``: traffic that
-    varies, as in ``pacing.model.simulate``.
+    varies, as in ``pacing.model.simulate``. ``keep``: store the cumulative spend
+    of this many runs (``traj_spend``), for charts.
 
     ``wallet`` (version (a)): clients hold up to this many tokens in total, handed
     out ahead of use and counted as used when handed out; each top-up gives at most
@@ -157,6 +159,8 @@ def simulate_with_backstop(
     true_spend = np.zeros(n_runs, dtype=np.int64)
     blocked = np.zeros(n_runs, dtype=np.int64)
     max_dev = np.zeros(n_runs)
+    keep = min(keep, n_runs)
+    traj_spend = np.zeros((keep, n_steps + 1))  # cumulative spend of the first `keep` runs
 
     controller.reset(n_runs)
     for i in range(n_steps):
@@ -301,11 +305,15 @@ def simulate_with_backstop(
         aim = (i + 1) / n_steps if target is None else target[i]
         dev = np.abs(true_spend / scn.budget_events - aim)
         np.maximum(max_dev, dev, out=max_dev)
+        if keep:
+            traj_spend[:, i + 1] = c * true_spend[:keep]
 
     return BackstopResult(
         final_spend=c * true_spend,
         overspent=true_spend > scn.budget_events + 1e-9,
         max_pace_deviation=max_dev,
+        traj_time=np.arange(n_steps + 1) * dt,
+        traj_spend=traj_spend,
         blocked_bids=blocked,
         cap_bound=blocked > 0,
     )

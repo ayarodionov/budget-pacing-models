@@ -99,3 +99,5 @@ grant_share = 0.5               # OPTIONAL, token cap (b), default 0.5
 [run]
 runs = 1000                     # OPTIONAL, default 1000: simulated campaigns per model
 seed = 1                        # OPTIONAL, default 1
+charts = false                  # OPTIONAL, default false: also draw results/scenarios/<name>.png
+                                # (the same as the --charts option)
